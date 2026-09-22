@@ -1,0 +1,6 @@
+{
+  "name": "Google Sheets Form Web App",
+  "description": "استمارة تسجيل ذكية متصلة بقوقل شيت (Google Sheets) ومجلد قوقل درايف وتلغرام مع دعم رفع الملفات، التصوير بالكاميرا، والجاهزية للنشر على Vercel و GitHub",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
