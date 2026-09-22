@@ -747,11 +747,12 @@ git push -u origin main`}
                   <li>افتح <strong><a href="https://vercel.com" target="_blank" rel="noopener noreferrer" className="text-emerald-600 font-semibold underline">vercel.com</a></strong> وسجل الدخول بحساب GitHub الخاص بك.</li>
                   <li>انقر على <strong>Add New...</strong> ثم <strong>Project</strong>.</li>
                   <li>اختر المستودع الجديد الذي قمت برفعه للتو ثم انقر <strong>Import</strong>.</li>
-                  <li>في خانة <strong>Environment Variables</strong> (اختياري)، يمكنك إضافة المتغيرات:
-                    <ul className="list-disc list-inside pr-4 mt-1 font-mono text-[11px] text-slate-700">
-                      <li><code>VITE_SPREADSHEET_ID</code> = معرف الشيت الخاص بك</li>
-                      <li><code>VITE_GOOGLE_SCRIPT_URL</code> = رابط سكريبت Web App</li>
-                      <li><code>VITE_DRIVE_FOLDER_ID</code> = معرف مجلد قوقل درايف</li>
+                  <li>في خانة <strong>Environment Variables</strong> (اختياري / موصى به):
+                    <ul className="list-disc list-inside pr-4 mt-1 font-mono text-[11px] text-slate-700 space-y-1">
+                      <li><code>VITE_SPREADSHEET_ID</code> = معرف جدول قوقل شيت</li>
+                      <li><code>VITE_GOOGLE_SCRIPT_URL</code> = رابط تطبيق الويب Google Apps Script</li>
+                      <li><code>VITE_DRIVE_FOLDER_ID</code> = معرف مجلد Google Drive للمرفقات</li>
+                      <li><code>GEMINI_API_KEY</code> = مفتاح Gemini API لتفعيل الترجمة الذكية بالذكاء الاصطناعي على Vercel</li>
                     </ul>
                   </li>
                   <li>انقر <strong>Deploy</strong>، وخلال دقيقة واحدة سيكون الفورم متاحاً عالمياً برابط Vercel سريع وآمن ومجاني!</li>

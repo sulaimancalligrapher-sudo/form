@@ -53,11 +53,46 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
 
   const t = getEffectiveUiTranslations(currentLang);
 
-  const handleShare = () => {
-    if (typeof window !== "undefined") {
-      navigator.clipboard.writeText(window.location.href);
+  const handleShare = async () => {
+    if (typeof window === "undefined") return;
+    const currentUrl = window.location.href;
+
+    // Use Web Share API if available on mobile/tablet devices
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: headerTitle,
+          text: headerSubtitle,
+          url: currentUrl
+        });
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2500);
+        return;
+      } catch (err: any) {
+        // If user cancelled share sheet, do nothing
+        if (err.name === "AbortError") return;
+      }
+    }
+
+    // Fallback: clipboard write or prompt
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(currentUrl);
+      } else {
+        const textArea = document.createElement("textarea");
+        textArea.value = currentUrl;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-9999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textArea);
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
+    } catch {
+      window.prompt("انسخ الرابط التالي لمشاركته:", currentUrl);
     }
   };
 
