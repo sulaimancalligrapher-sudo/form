@@ -47,7 +47,17 @@ export function getActiveScriptUrl(): string {
   if (typeof window !== "undefined") {
     try {
       const saved = localStorage.getItem("sheet_form_script_url");
-      if (saved && saved.trim().startsWith("http")) return saved.trim();
+      if (saved && saved.trim().startsWith("http")) {
+        // Automatically upgrade outdated known default URLs to the new updated backend
+        if (
+          saved.includes("AKfycbwxn8Q7W9Db") ||
+          saved.includes("AKfycbyl2_TnMESST")
+        ) {
+          localStorage.setItem("sheet_form_script_url", DEFAULT_SCRIPT_URL);
+          return DEFAULT_SCRIPT_URL;
+        }
+        return saved.trim();
+      }
     } catch (e) {}
   }
   const envUrl = import.meta.env?.VITE_GOOGLE_SCRIPT_URL;

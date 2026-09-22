@@ -30,7 +30,7 @@ export default async function handler(req: any, res: any) {
       payload.scriptUrl ||
       process.env.VITE_GOOGLE_SCRIPT_URL ||
       process.env.GOOGLE_SCRIPT_URL ||
-      "https://script.google.com/macros/s/AKfycbwO6_PHYlPNgCzyDv2waJVm33D49qXTwl_ds2jkHdWXz3cgvwzdUMdNNq5x98H4aZJw/exec";
+      "https://script.google.com/macros/s/AKfycby2c8oxfM-4ZLLkjf-K9YCAh_BmVKHEQvfqFrR2LSJv4fdCVk-0dSanjgU3GzL2J5Cl/exec";
 
     // Forward to Google Apps Script
     const gasResponse = await fetch(scriptUrl, {

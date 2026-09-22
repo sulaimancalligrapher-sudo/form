@@ -44,6 +44,21 @@ function doGet(e) {
         success: true,
         records: records
       };
+    } else if (action === "translate") {
+      var textToTrans = (e && e.parameter && e.parameter.text) ? e.parameter.text : "";
+      var toLang = (e && e.parameter && e.parameter.targetLang) ? e.parameter.targetLang : "en";
+      var transResult = "";
+      try {
+        if (textToTrans) {
+          transResult = LanguageApp.translate(textToTrans, "ar", toLang);
+        }
+      } catch (tErr) {
+        transResult = textToTrans;
+      }
+      outputData = {
+        success: true,
+        translation: transResult
+      };
     } else {
       outputData = {
         success: true,
