@@ -32,6 +32,8 @@ interface TranslationSettingsTabProps {
   questions: RegistrationQuestion[];
   currentLang: FormLang;
   onTranslationsUpdated: () => void;
+  surveyId?: number;
+  scriptUrl?: string;
 }
 
 interface UiTextCategory {
@@ -106,7 +108,9 @@ const UI_CATEGORIES: UiTextCategory[] = [
 
 export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
   questions,
-  onTranslationsUpdated
+  onTranslationsUpdated,
+  surveyId = 1,
+  scriptUrl
 }) => {
   const [subTab, setSubTab] = useState<"questions" | "ui">("questions");
   const [searchQuery, setSearchQuery] = useState("");
@@ -369,7 +373,7 @@ export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
       ...q,
       translations: getEffectiveQuestionTranslation(q.question, q.options)
     }));
-    saveFormQuestionsBridge(enrichedQuestions).catch(() => {});
+    saveFormQuestionsBridge(enrichedQuestions, scriptUrl, surveyId).catch(() => {});
     showNotification(`🎉 اكتملت ترجمة جميع الأسئلة (${successCount} سؤال) وحفظها لجميع الأجهزة (English + ภาษาไทย) بنجاح!`);
   };
 
@@ -384,7 +388,7 @@ export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
         ...(questionTranslations[q.question.trim()] || {})
       }
     }));
-    saveFormQuestionsBridge(enrichedQuestions).catch(() => {});
+    saveFormQuestionsBridge(enrichedQuestions, scriptUrl, surveyId).catch(() => {});
     onTranslationsUpdated();
     showNotification("تم حفظ جميع الترجمات والنصوص ومزامنتها مع قوقل شيت لجميع الأجهزة بنجاح!");
   };

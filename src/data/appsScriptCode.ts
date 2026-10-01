@@ -3,13 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  * 
  * Google Apps Script Backend Code
- * Complete, standalone Apps Script code for Google Sheets integration.
+ * Complete, standalone Apps Script code for Google Sheets integration with Multi-Survey support.
  * Paste this directly into Google Sheets -> Extensions -> Apps Script.
  */
 
 export const GOOGLE_APPS_SCRIPT_CODE = `/**
  * =========================================================================
  * كود تطبيق نص برمجي (Google Apps Script) المتكامل للاستمارة وقوقل شيت
+ * يدعم تعدد الاستبيانات (Survey 1, Survey 2, Survey 3...) وتعدد الأوراق تلقائياً
  * =========================================================================
  * 
  * طريقة التثبيت في 3 خطوات بسيطة:
@@ -19,11 +20,26 @@ export const GOOGLE_APPS_SCRIPT_CODE = `/**
  * 4. اختر النوع: تطبيق ويب (Web app)، واجعل الوصول: (أي شخص / Anyone)، ثم انسخ رابط الـ Web App وضعه في إعدادات الفورم!
  */
 
+// دالة مساعدة لتحديد أسماء أوراق الاستبيان حسب رقمه (1، 2، 3...)
+function resolveSurveySheetNames(surveyId, customQSheet, customASheet) {
+  var sId = parseInt(surveyId || "1", 10);
+  if (isNaN(sId) || sId < 1) sId = 1;
+  var qSheetName = customQSheet || (sId === 1 ? "RegistrationQuestions" : ("RegistrationQuestions_" + sId));
+  var aSheetName = customASheet || (sId === 1 ? "RegistrationAnswers" : ("RegistrationAnswers_" + sId));
+  return {
+    surveyId: sId,
+    questionsSheetName: qSheetName,
+    answersSheetName: aSheetName
+  };
+}
+
 // 1. استقبال طلبات GET (فحص الاتصال وجلب الأسئلة وقراءة المسجلين)
 function doGet(e) {
   try {
     var action = (e && e.parameter && e.parameter.action) ? e.parameter.action : "ping";
     var callback = (e && e.parameter && e.parameter.callback) ? e.parameter.callback : "";
+    var surveyIdParam = (e && e.parameter && e.parameter.surveyId) ? e.parameter.surveyId : "1";
+    var sheetNameParam = (e && e.parameter && e.parameter.sheetName) ? e.parameter.sheetName : "";
     var outputData = null;
     
     if (action === "ping" || action === "test") {
@@ -33,16 +49,23 @@ function doGet(e) {
         timestamp: new Date().toISOString()
       };
     } else if (action === "getFormQuestions") {
-      var questions = getFormQuestionsFromSheet();
+      var qNames = resolveSurveySheetNames(surveyIdParam, sheetNameParam, "");
+      var questions = getFormQuestionsFromSheet(qNames.questionsSheetName, qNames.surveyId);
       outputData = {
         success: true,
+        surveyId: qNames.surveyId,
+        sheetName: qNames.questionsSheetName,
         questions: questions
       };
     } else if (action === "getRegistrationAnswers" || action === "getAnswers") {
-      var records = getRegistrationAnswersRecords();
+      var aNames = resolveSurveySheetNames(surveyIdParam, "", sheetNameParam);
+      var records = getRegistrationAnswersRecords(aNames.answersSheetName, aNames.surveyId);
       outputData = {
         success: true,
-        records: records
+        surveyId: aNames.surveyId,
+        sheetName: aNames.answersSheetName,
+        headers: records.headers,
+        records: records.records
       };
     } else if (action === "getSubscribers") {
       var subscribers = getSubscribersFromSheet();
@@ -92,7 +115,7 @@ function doGet(e) {
   }
 }
 
-// 2. استقبال طلبات POST (تسجيل مشترك جديد، رفع ملف لدرايف، حفظ الإعدادات)
+// 2. استقبال طلبات POST (تسجيل مشترك جديد، رفع ملف لدرايف، حفظ الإعدادات، إنشاء استبيان جديد)
 function doPost(e) {
   try {
     var postData = {};
@@ -104,14 +127,12 @@ function doPost(e) {
       try {
         postData = JSON.parse(rawContents);
       } catch (jsonErr) {
-        // Handle URL-encoded or raw form-data fallback
         postData = e.parameter || {};
       }
     } else if (e && e.parameter) {
       postData = e.parameter;
     }
     
-    // إذا كانت البيانات مرسلة عبر hidden input باسم يحتوي على الـ JSON
     if (typeof postData === "object" && !postData.action) {
       for (var key in postData) {
         if (key.indexOf('{"') === 0 || key.indexOf("{'") === 0) {
@@ -128,7 +149,7 @@ function doPost(e) {
 
     var action = postData.action || "submitRegistration";
 
-    // أ) تسجيل استمارة جديدة
+    // أ) تسجيل استمارة جديدة (يدعم أي استبيان surveyId = 1, 2, 3...)
     if (action === "submitRegistration") {
       var regResult = submitRegistrationToSheet(postData);
       return ContentService.createTextOutput(JSON.stringify(regResult))
@@ -147,14 +168,20 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
 
-    // ج) حفظ وتحديث أسئلة ورقة RegistrationQuestions من لوحة الإدارة
-    if (action === "saveFormQuestions" || action === "saveQuestions") {
-      var saveResult = saveFormQuestionsToSheet(postData.questions);
+    // ج) حفظ وتحديث أسئلة ورقة الاستبيان (RegistrationQuestions أو RegistrationQuestions_2...) أو إنشاء استبيان جديد
+    if (action === "saveFormQuestions" || action === "saveQuestions" || action === "createSurveySheets") {
+      var sNames = resolveSurveySheetNames(postData.surveyId, postData.questionsSheet, postData.answersSheet);
+      var saveResult = saveFormQuestionsToSheet(
+        postData.questions || [],
+        sNames.questionsSheetName,
+        sNames.answersSheetName,
+        sNames.surveyId
+      );
       return ContentService.createTextOutput(JSON.stringify(saveResult))
         .setMimeType(ContentService.MimeType.JSON);
     }
 
-    // د) تحديث صف مشترك في ورقة (المشتركين) - النقاط، الإجابات (|||)، تحليل الذكاء الاصطناعي
+    // د) تحديث صف مشترك في ورقة (المشتركين) - يدعم الأعمدة الإضافية لكل استبيان (3 أعمدة لكل استبيان)
     if (action === "updateSubscriberRow") {
       var rowUpdateRes = updateSubscriberRowInSheet(postData);
       return ContentService.createTextOutput(JSON.stringify(rowUpdateRes))
@@ -187,28 +214,24 @@ function extractScoreFromAnswer(ansStr) {
   if (ansStr === undefined || ansStr === null || ansStr === "") return 0;
   var s = ansStr.toString().trim();
 
-  // 1. نمط: رقم متبوع بفاصل مثل: "4 - ممتاز" أو "4-ممتاز" أو "4: نعم" أو "4. خيار" أو "4) موافق"
   var m1 = s.match(/(?:^|[^\d.])(\d+(?:\.\d+)?)\s*[-—–ـ:.)/]/);
   if (m1 && m1[1]) {
     var v1 = parseFloat(m1[1]);
     if (!isNaN(v1)) return v1;
   }
 
-  // 2. نمط: أرقام بين أقواس مثل "(4)" أو "[4]"
   var m2 = s.match(/[(\[]\s*(\d+(?:\.\d+)?)\s*[)\]]/);
   if (m2 && m2[1]) {
     var v2 = parseFloat(m2[1]);
     if (!isNaN(v2)) return v2;
   }
 
-  // 3. نمط: رقم في بداية النص أو نص رقمي مجرد: "4" أو "4 خيار"
   var m3 = s.match(/^\s*(\d+(?:\.\d+)?)/);
   if (m3 && m3[1]) {
     var v3 = parseFloat(m3[1]);
     if (!isNaN(v3)) return v3;
   }
 
-  // 4. أي رقم مستقل داخل النص
   var m4 = s.match(/\b(\d+(?:\.\d+)?)\b/);
   if (m4 && m4[1]) {
     var v4 = parseFloat(m4[1]);
@@ -222,7 +245,6 @@ function extractScoreFromAnswer(ansStr) {
 function isScoredQuestionType(typeStr) {
   if (!typeStr) return false;
   var t = typeStr.toString().toLowerCase().trim();
-  // اختيارات 3 (اختيار متعدد / Checkboxes) ليست لحساب النقاط
   if (
     t.indexOf("3") !== -1 ||
     t.indexOf("متعدد") !== -1 ||
@@ -263,7 +285,7 @@ function isTotalScoreHeader(headerStr) {
   );
 }
 
-// دالة تنظيف ومطابقة عناوين الأعمدة والأسئلة (تتجاهل الفروقات الإملائية مثل انواع وانوان والهمزات والمسافات)
+// دالة تنظيف ومطابقة عناوين الأعمدة والأسئلة
 function normalizeQuestionKey(str) {
   if (!str) return "";
   return str.toString()
@@ -274,20 +296,17 @@ function normalizeQuestionKey(str) {
     .replace(/[أإآ]/g, "ا")
     .replace(/ة/g, "ه")
     .replace(/ى/g, "ي")
-    .replace(/انوان/g, "انواع"); // مطابقة كلمة انوان مع انواع
+    .replace(/انوان/g, "انواع");
 }
 
-// دالة استخراج القيمة الدقيقة للعمود من الإجابات المستلمة بدون أي افتراضات سابقة
 function findAnswerForColumn(colHeader, answersMap, data, qIdx) {
   if (!colHeader && (qIdx === undefined || qIdx < 0)) return "";
   var normCol = normalizeQuestionKey(colHeader);
 
-  // 1. مطابقة مباشرة بالاسم الدقيق للسؤال
   if (colHeader && answersMap[colHeader] !== undefined && answersMap[colHeader] !== null && answersMap[colHeader] !== "") {
     return answersMap[colHeader];
   }
 
-  // 2. مطابقة عبر المفاتيح المنظفة
   if (normCol) {
     for (var key in answersMap) {
       if (normalizeQuestionKey(key) === normCol && answersMap[key] !== undefined && answersMap[key] !== "") {
@@ -296,9 +315,7 @@ function findAnswerForColumn(colHeader, answersMap, data, qIdx) {
     }
   }
 
-  // 3. مطابقة ترتيبية من مصفوفة الإجابات المرسلة من النموذج
   if (data && data.answers && Array.isArray(data.answers)) {
-    // أ) عبر رقم الترتيب الدقيق للسؤال
     if (qIdx !== undefined && qIdx >= 0 && qIdx < data.answers.length) {
       var item = data.answers[qIdx];
       if (item && item.answer !== undefined && item.answer !== null && item.answer !== "") {
@@ -306,7 +323,6 @@ function findAnswerForColumn(colHeader, answersMap, data, qIdx) {
       }
     }
 
-    // ب) عبر مطابقة عنوان السؤال في المصفوفة
     if (normCol) {
       for (var ai = 0; ai < data.answers.length; ai++) {
         var itm = data.answers[ai];
@@ -319,7 +335,6 @@ function findAnswerForColumn(colHeader, answersMap, data, qIdx) {
     }
   }
 
-  // 4. فحص المرفقات في حال كان الحقل لرفع الملفات
   if (data.attachment && normCol && (normCol.indexOf("ملف") !== -1 || normCol.indexOf("مرفق") !== -1 || normCol.indexOf("صوره") !== -1)) {
     return data.attachment;
   }
@@ -327,29 +342,31 @@ function findAnswerForColumn(colHeader, answersMap, data, qIdx) {
   return "";
 }
 
-// 3. دالة تسجيل وحفظ الاستمارة في ورقة RegistrationAnswers
+// 3. دالة تسجيل وحفظ الاستمارة في ورقة الإجابات المخصصة للاستبيان + ورقة المشتركين
 function submitRegistrationToSheet(data) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheetName = "RegistrationAnswers";
-    var sheet = ss.getSheetByName(sheetName) || ss.getSheetByName("طلبات التسجيل") || ss.getSheetByName("إجابات التسجيل");
-    
-    // إنشاء الورقة إذا لم تكن موجودة
+    var sNames = resolveSurveySheetNames(data.surveyId, data.questionsSheet, data.answersSheet);
+    var surveyId = sNames.surveyId;
+    var questionsSheetName = sNames.questionsSheetName;
+    var answersSheetName = sNames.answersSheetName;
+
+    var sheet = ss.getSheetByName(answersSheetName);
+    if (!sheet && surveyId === 1) {
+      sheet = ss.getSheetByName("طلبات التسجيل") || ss.getSheetByName("إجابات التسجيل");
+    }
     if (!sheet) {
-      sheet = ss.insertSheet(sheetName);
+      sheet = ss.insertSheet(answersSheetName);
     }
     
-    // تنسيق التاريخ والوقت
     var timestamp = Utilities.formatDate(new Date(), "GMT+3", "yyyy/MM/dd - hh:mm a");
 
-    // اعتماد رقم المشترك الحقيقي والاسم الكامل
     var registrationId = String(data.registrationId || data.subscriberId || data.studentId || "").trim();
     var displayName = String(data.name || data.studentName || data.nameArabic || "").trim();
     if (!registrationId && displayName) {
       registrationId = displayName;
     }
 
-    // حماية صارمة: منع إضافة أي صف فارغ إذا كانت بيانات المشترك والإجابات فارغة
     if (!registrationId && !displayName) {
       return {
         success: false,
@@ -357,7 +374,6 @@ function submitRegistrationToSheet(data) {
       };
     }
 
-    // دالة مساعدة لضمان عدم تجاوز الحد الأقصى لخلية قوقل شيت (50,000 حرف)
     function safeCellText(strVal) {
       if (strVal === undefined || strVal === null) return "";
       var s = String(strVal);
@@ -370,7 +386,6 @@ function submitRegistrationToSheet(data) {
       return s;
     }
 
-    // تجميع الإجابات في كائن ميسر + رفع أي صورة Base64 إلى قوقل درايف وتحديث المصفوفة مباشرة
     var answersMap = {};
     var targetFolderId = data.driveFolderId || "1tae6n3-tjB9vVtxr2GbK572SRtWxZ3f7";
     var lastUploadedUrl = "";
@@ -382,14 +397,13 @@ function submitRegistrationToSheet(data) {
         var qText = (item.question || "").toString().trim();
         var qAns = (item.answer !== undefined && item.answer !== null) ? item.answer.toString().trim() : "";
 
-        // إذا كانت الإجابة عبارة عن ملف أو صورة Base64، نرفعها فوراً إلى قوقل درايف ونستبدلها بالرابط القصير
         if (qAns && (qAns.indexOf("data:") === 0 || qAns.indexOf("base64,") !== -1)) {
           var finalFileUrl = "[صورة مرفقة]";
           try {
             var mimeMatch = qAns.match(/data:([^;]+);/);
             var mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
             var safeName = (displayName || "student").replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, "_");
-            var fileName = safeName + "_" + registrationId + "_" + Utilities.formatDate(new Date(), "GMT+3", "yyyyMMdd_HHmm") + ".jpg";
+            var fileName = safeName + "_" + registrationId + "_S" + surveyId + "_" + Utilities.formatDate(new Date(), "GMT+3", "yyyyMMdd_HHmm") + ".jpg";
             var upRes = uploadFileToDrive(qAns, fileName, mime, targetFolderId);
             if (upRes && upRes.success && (upRes.fileUrl || upRes.viewUrl || upRes.downloadUrl)) {
               finalFileUrl = upRes.fileUrl || upRes.viewUrl || upRes.downloadUrl;
@@ -416,7 +430,7 @@ function submitRegistrationToSheet(data) {
             var attMimeMatch = attStr.match(/data:([^;]+);/);
             var attMime = attMimeMatch ? attMimeMatch[1] : "image/jpeg";
             var attSafeName = (displayName || "student").replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, "_");
-            var attFileName = attSafeName + "_" + registrationId + "_" + Utilities.formatDate(new Date(), "GMT+3", "yyyyMMdd_HHmm") + ".jpg";
+            var attFileName = attSafeName + "_" + registrationId + "_S" + surveyId + "_" + Utilities.formatDate(new Date(), "GMT+3", "yyyyMMdd_HHmm") + ".jpg";
             var attUpRes = uploadFileToDrive(attStr, attFileName, attMime, targetFolderId);
             if (attUpRes && attUpRes.success && (attUpRes.fileUrl || attUpRes.viewUrl || attUpRes.downloadUrl)) {
               data.attachment = attUpRes.fileUrl || attUpRes.viewUrl || attUpRes.downloadUrl;
@@ -434,13 +448,16 @@ function submitRegistrationToSheet(data) {
       }
     }
 
-    // قراءة أسئلة ورقة RegistrationQuestions لتحديد الأعمدة النشطة بدقة وبدون أي أثر للنظام القديم
+    // قراءة أسئلة ورقة الأسئلة الخاصة بهذا الاستبيان
     var activeQuestions = [];
     var scoredQuestionsMap = {};
     var hasScoredQuestions = (data.hasScoredQuestions === true);
 
     try {
-      var qSheetObj = ss.getSheetByName("RegistrationQuestions") || ss.getSheetByName("أسئلة التسجيل");
+      var qSheetObj = ss.getSheetByName(questionsSheetName);
+      if (!qSheetObj && surveyId === 1) {
+        qSheetObj = ss.getSheetByName("أسئلة التسجيل");
+      }
       if (qSheetObj) {
         var qData = qSheetObj.getDataRange().getValues();
         for (var qi = 0; qi < qData.length; qi++) {
@@ -449,10 +466,8 @@ function submitRegistrationToSheet(data) {
           var qTitle = String(qRow[0]).trim();
           var qTypeVal = qRow[2] ? String(qRow[2]).trim().toLowerCase() : "text";
 
-          // تجاوز الترويسة إن وجدت
           if (qTitle === "السؤال" || qTitle === "عنوان الحقل" || qTitle === "Question" || qTitle === "نص السؤال") continue;
 
-          // تجاوز عناصر العرض فقط التي لا تتطلب إجابة
           if (
             qTitle === "صورة" ||
             qTypeVal === "صورة" ||
@@ -464,7 +479,6 @@ function submitRegistrationToSheet(data) {
             continue;
           }
 
-          // تجاوز أسئلة الاسم ورقم المشترك إذا وُجدت لأنها مسجلة سلفاً في العمودين B و C
           var normQT = normalizeQuestionKey(qTitle);
           if (
             normQT === "الاسم" ||
@@ -489,10 +503,9 @@ function submitRegistrationToSheet(data) {
         }
       }
     } catch (qErr) {
-      Logger.log("Notice: Could not read RegistrationQuestions: " + qErr.message);
+      Logger.log("Notice: Could not read " + questionsSheetName + ": " + qErr.message);
     }
 
-    // إذا تعذر قراءة ورقة الأسئلة مباشرة، نعتمد على الأسئلة الواردة من واجهة المستخدم
     if (activeQuestions.length === 0 && data.answers && Array.isArray(data.answers)) {
       for (var di = 0; di < data.answers.length; di++) {
         var dItem = data.answers[di];
@@ -521,7 +534,7 @@ function submitRegistrationToSheet(data) {
       }
     }
 
-    // حساب مجموع نقاط أسئلة (اختيارات 2 / scored_choice)
+    // حساب مجموع النقاط
     var totalScore = 0;
     if (data.answers && Array.isArray(data.answers)) {
       for (var ai = 0; ai < data.answers.length; ai++) {
@@ -546,14 +559,11 @@ function submitRegistrationToSheet(data) {
       }
     }
 
-    // إذا تم تمرير مجموع النقاط جاهزاً من الواجهة
     if (totalScore === 0 && data.totalScore !== undefined && data.totalScore !== null && !isNaN(Number(data.totalScore))) {
       totalScore = Number(data.totalScore);
       if (totalScore > 0) hasScoredQuestions = true;
     }
 
-    // بناء نص تجميع كل الإجابات في خلية واحدة مفصولة بـ ( ||| ) للعمود الخامس في ورقة المشتركين
-    // نعتمد على الإجابات المنظفة بعد تحويل أي صورة مرفوعة إلى رابط قوقل درايف قصير
     var combinedAnswersStr = "";
     if (data.answers && Array.isArray(data.answers) && data.answers.length > 0) {
       var ansParts = [];
@@ -575,17 +585,15 @@ function submitRegistrationToSheet(data) {
 
     // =========================================================================
     // أولاً: التسجيل المباشر في نفس صف المشترك داخل ورقة (المشتركين)
-    // العمود 1 (A): رقم تسلسل
-    // العمود 2 (B): Student ID
-    // العمود 3 (C): Student Name
-    // العمود 4 (D): عدد مجموع النقاط
-    // العمود 5 (E): تجميع كل الإجابات (|||)
-    // العمود 6 (F): تحليل الذكاء الاصطناعي
+    // الاستبيان 1 -> الأعمدة 4، 5، 6 (D, E, F)
+    // الاستبيان 2 -> الأعمدة 7، 8، 9 (G, H, I)
+    // الاستبيان N -> الأعمدة 4+(N-1)*3 ، 5+(N-1)*3 ، 6+(N-1)*3
     // =========================================================================
     try {
       updateSubscriberRowInSheet({
         studentId: registrationId,
         studentName: displayName,
+        surveyId: surveyId,
         totalScore: totalScore,
         combinedAnswers: combinedAnswersStr,
         aiAnalysis: aiAnalysisStr
@@ -594,12 +602,6 @@ function submitRegistrationToSheet(data) {
       Logger.log("Subscribers sheet update notice: " + subSheetErr.toString());
     }
 
-    // بناء الترويسة القياسية الصارمة والمطلوبة:
-    // العمود A: التاريخ والوقت
-    // العمود B: رقم التسجيل (رقم المشترك الفعلي)
-    // العمود C: الاسم الكامل للمشترك
-    // الأعمدة اللاحقة: أسئلة الاستمارة الفعالة بالترتيب الدقيق
-    // العمود الأخير دائماً: مجموع النقاط
     var expectedHeaders = [
       "التاريخ والوقت",
       "رقم التسجيل",
@@ -608,10 +610,8 @@ function submitRegistrationToSheet(data) {
     for (var aq = 0; aq < activeQuestions.length; aq++) {
       expectedHeaders.push(activeQuestions[aq].title);
     }
-    // وضع عنوان العمود الأخير تلقائياً باسم: مجموع النقاط
     expectedHeaders.push("مجموع النقاط");
 
-    // قراءة ترويسة الأعمدة الحالية في ورقة RegistrationAnswers
     var lastRow = sheet.getLastRow();
     var lastCol = sheet.getLastColumn();
     var headers = [];
@@ -625,7 +625,6 @@ function submitRegistrationToSheet(data) {
       }
     }
 
-    // التحقق مما إذا كانت الترويسة بحاجة لتحديث فوري لمطابقة الهيكل الجديد
     var needHeaderUpdate = false;
     if (headers.length !== expectedHeaders.length) {
       needHeaderUpdate = true;
@@ -646,20 +645,17 @@ function submitRegistrationToSheet(data) {
       }
     }
 
-    // إذا كانت الترويسة بحاجة لتحديث، نطبق الهيكل النظيف والجديد فوراً
     if (needHeaderUpdate && expectedHeaders.length >= 3) {
       var maxClearCols = Math.max(headers.length, expectedHeaders.length, lastCol || 0, 50);
       sheet.getRange(1, 1, 1, maxClearCols).clearContent();
       sheet.getRange(1, 1, 1, expectedHeaders.length).setValues([expectedHeaders]);
       
-      // التنسيق العام لترويسة الأعمدة
       sheet.getRange(1, 1, 1, expectedHeaders.length)
         .setFontWeight("bold")
         .setBackground("#1E293B")
         .setFontColor("#F8FAFC")
         .setHorizontalAlignment("center");
 
-      // تمييز عمود مجموع النقاط الأخير بلون مميز
       sheet.getRange(1, expectedHeaders.length)
         .setFontWeight("bold")
         .setBackground("#047857")
@@ -670,45 +666,27 @@ function submitRegistrationToSheet(data) {
       headers = expectedHeaders;
     }
 
-    // بناء صف الإدخال الجديد بالترتيب الصارم:
-    // العمود 0 (A): التاريخ والوقت
-    // العمود 1 (B): رقم التسجيل
-    // العمود 2 (C): الاسم الكامل للمشترك
-    // العمود 3 فما بعد (D+): إجابات الأسئلة بالترتيب الدقيق
-    // العمود الأخير: مجموع النقاط
     var newRow = [];
     var totalScoreColIndex = headers.length - 1;
 
     for (var c = 0; c < headers.length; c++) {
       var hName = headers[c];
-
-      // 1. العمود الأول (A): التاريخ والوقت حصراً
       if (c === 0) {
         newRow.push(timestamp);
-      } 
-      // 2. العمود الثاني (B): رقم التسجيل حصراً
-      else if (c === 1) {
+      } else if (c === 1) {
         newRow.push(registrationId);
-      } 
-      // 3. العمود الثالث (C): الاسم الكامل للمشترك حصراً
-      else if (c === 2) {
+      } else if (c === 2) {
         newRow.push(displayName);
-      } 
-      // 4. العمود الأخير: مجموع النقاط
-      else if (c === totalScoreColIndex || (c > 2 && isTotalScoreHeader(hName))) {
+      } else if (c === totalScoreColIndex || (c > 2 && isTotalScoreHeader(hName))) {
         newRow.push(hasScoredQuestions || totalScore > 0 ? totalScore : (hasScoredQuestions ? 0 : ""));
-      } 
-      // 5. جميع الأعمدة الأخرى (من D إلى ما قبل الأخير): إجابات أسئلة الاستمارة
-      else {
+      } else {
         var qIdx = c - 3;
         var ans = findAnswerForColumn(hName, answersMap, data, qIdx);
-        // حفظ الإجابة كنص صريح وآمن دون تجاوز حد الخلية
         var ansStr = safeCellText(ans);
         newRow.push(ansStr);
       }
     }
 
-    // تنظيف أي صفوف فارغة سابقة (بدون رقم تسجيل وبدون اسم) في ورقة RegistrationAnswers
     try {
       var currentLastRow = sheet.getLastRow();
       if (currentLastRow > 1) {
@@ -724,8 +702,7 @@ function submitRegistrationToSheet(data) {
       lastRow = sheet.getLastRow();
     } catch (cleanErr) {}
 
-    // فحص منع التكرار: البحث عن رقم المشترك في العمود B
-    var regIdColIdx = 2; // العمود B دائماً
+    var regIdColIdx = 2;
     var existingRowIdx = -1;
     if (lastRow > 1) {
       var idValues = sheet.getRange(2, regIdColIdx, lastRow - 1, 1).getValues();
@@ -739,7 +716,6 @@ function submitRegistrationToSheet(data) {
     }
 
     if (existingRowIdx !== -1) {
-      // تحديث بيانات المشترك نفسه
       sheet.getRange(existingRowIdx, 1, 1, newRow.length).setValues([newRow]);
       if (newRow.length > 3) {
         var qColsCount = (totalScoreColIndex > 3) ? (totalScoreColIndex - 3) : (newRow.length - 3);
@@ -750,12 +726,12 @@ function submitRegistrationToSheet(data) {
       return {
         success: true,
         registrationId: registrationId,
+        surveyId: surveyId,
         timestamp: timestamp,
         isUpdated: true,
-        message: "تم تحديث بيانات التسجيل للرقم (" + registrationId + ") بنجاح!"
+        message: "تم تحديث بيانات التسجيل للرقم (" + registrationId + ") في " + answersSheetName + " بنجاح!"
       };
     } else {
-      // إضافة صف جديد
       sheet.appendRow(newRow);
       var newLastRow = sheet.getLastRow();
       if (newLastRow > 1) {
@@ -775,6 +751,7 @@ function submitRegistrationToSheet(data) {
     return {
       success: true,
       registrationId: registrationId,
+      surveyId: surveyId,
       timestamp: timestamp,
       message: "تم حفظ طلب التسجيل بنجاح بالرقم المرجعي (" + registrationId + ") في جدول البيانات!"
     };
@@ -828,11 +805,15 @@ function uploadFileToDrive(base64Data, fileName, mimeType, folderId) {
   }
 }
 
-// 5. جلب الأسئلة من ورقة RegistrationQuestions إن وجدت
-function getFormQuestionsFromSheet() {
+// 5. جلب الأسئلة من ورقة الأسئلة الخاصة بالاستبيان (RegistrationQuestions أو RegistrationQuestions_2...)
+function getFormQuestionsFromSheet(targetSheetName, surveyId) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var qSheet = ss.getSheetByName("RegistrationQuestions") || ss.getSheetByName("أسئلة التسجيل");
+    var sName = targetSheetName || "RegistrationQuestions";
+    var qSheet = ss.getSheetByName(sName);
+    if (!qSheet && (!surveyId || Number(surveyId) === 1)) {
+      qSheet = ss.getSheetByName("أسئلة التسجيل");
+    }
     if (!qSheet) return [];
     var data = qSheet.getDataRange().getValues();
     var questions = [];
@@ -851,7 +832,6 @@ function getFormQuestionsFromSheet() {
       var optsEnStr = row[9] ? String(row[9]).trim() : "";
       var optsThStr = row[10] ? String(row[10]).trim() : "";
 
-      // تحديد نوع العنصر
       var fieldType = "text";
       if (qText === "صورة" || rawType === "صورة" || rawType === "image" || rawType.indexOf("عرض صورة") !== -1 || (rawType.indexOf("رابط") !== -1 && imgUrl && (!extLink || extLink === "-"))) {
         fieldType = "image_display";
@@ -873,7 +853,6 @@ function getFormQuestionsFromSheet() {
         fieldType = "choice";
       }
 
-      // تحليل الخيارات المتاحة
       var options = [];
       if (optStr) {
         if (optStr.indexOf("|||") !== -1) {
@@ -911,11 +890,15 @@ function getFormQuestionsFromSheet() {
   }
 }
 
-// 6. جلب السجلات المسجلة من ورقة RegistrationAnswers
-function getRegistrationAnswersRecords() {
+// 6. جلب السجلات المسجلة من ورقة الإجابات الخاصة بالاستبيان
+function getRegistrationAnswersRecords(targetSheetName, surveyId) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName("RegistrationAnswers") || ss.getSheetByName("طلبات التسجيل") || ss.getSheetByName("إجابات التسجيل");
+    var sName = targetSheetName || "RegistrationAnswers";
+    var sheet = ss.getSheetByName(sName);
+    if (!sheet && (!surveyId || Number(surveyId) === 1)) {
+      sheet = ss.getSheetByName("طلبات التسجيل") || ss.getSheetByName("إجابات التسجيل");
+    }
     if (!sheet) return { headers: [], records: [] };
     var values = sheet.getDataRange().getValues();
     if (values.length <= 1) return { headers: values[0] || [], records: [] };
@@ -937,17 +920,21 @@ function getRegistrationAnswersRecords() {
   }
 }
 
-// 7. حفظ وتحديث أسئلة وترجمات ورقة RegistrationQuestions من لوحة الإدارة
-function saveFormQuestionsToSheet(questions) {
+// 7. حفظ وتحديث أسئلة وترجمات ورقة الاستبيان وإنشاء ورقة الإجابات وأعمدة المشتركين تلقائياً
+function saveFormQuestionsToSheet(questions, customQSheetName, customASheetName, surveyId) {
   try {
-    if (!questions || !Array.isArray(questions)) {
-      return { success: false, error: "قائمة الأسئلة غير صالحة" };
-    }
+    var sNames = resolveSurveySheetNames(surveyId, customQSheetName, customASheetName);
+    var qSheetName = sNames.questionsSheetName;
+    var aSheetName = sNames.answersSheetName;
+    var sId = sNames.surveyId;
+
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheetName = "RegistrationQuestions";
-    var sheet = ss.getSheetByName(sheetName) || ss.getSheetByName("أسئلة التسجيل");
+    var sheet = ss.getSheetByName(qSheetName);
+    if (!sheet && sId === 1) {
+      sheet = ss.getSheetByName("أسئلة التسجيل");
+    }
     if (!sheet) {
-      sheet = ss.insertSheet(sheetName);
+      sheet = ss.insertSheet(qSheetName);
     }
     
     var headers = [
@@ -966,61 +953,68 @@ function saveFormQuestionsToSheet(questions) {
 
     sheet.clearContents();
     var rows = [headers];
+    var answerHeaders = ["التاريخ والوقت", "رقم التسجيل", "الاسم الكامل للمشترك"];
 
-    for (var i = 0; i < questions.length; i++) {
-      var q = questions[i];
-      if (!q) continue;
+    if (questions && Array.isArray(questions)) {
+      for (var i = 0; i < questions.length; i++) {
+        var q = questions[i];
+        if (!q) continue;
 
-      var optStr = "";
-      if (Array.isArray(q.options)) {
-        optStr = q.options.join("|||");
-      } else if (q.options) {
-        optStr = String(q.options);
+        var optStr = "";
+        if (Array.isArray(q.options)) {
+          optStr = q.options.join("|||");
+        } else if (q.options) {
+          optStr = String(q.options);
+        }
+
+        var reqStr = (q.required === true || q.required === "نعم") ? "نعم" : "لا";
+        
+        var rawT = (q.type || "text").toString().toLowerCase().trim();
+        var typeAr = "نص";
+        if (rawT === "choice" || (rawT.indexOf("اختيار") !== -1 && rawT.indexOf("2") === -1 && rawT.indexOf("3") === -1)) {
+          typeAr = "اختيارات";
+        } else if (rawT === "scored_choice" || rawT.indexOf("2") !== -1 || rawT.indexOf("نقاط") !== -1) {
+          typeAr = "اختيارات 2";
+        } else if (rawT === "multiple_choice" || rawT.indexOf("3") !== -1 || rawT.indexOf("متعدد") !== -1 || rawT.indexOf("checkbox") !== -1) {
+          typeAr = "اختيارات 3";
+        } else if (rawT === "file" || rawT.indexOf("ملف") !== -1 || rawT.indexOf("رفع") !== -1) {
+          typeAr = "رفع ملف";
+        } else if (rawT === "phone" || rawT.indexOf("هاتف") !== -1) {
+          typeAr = "رقم هاتف";
+        } else if (rawT === "email" || rawT.indexOf("ايميل") !== -1 || rawT.indexOf("بريد") !== -1) {
+          typeAr = "ايميل";
+        } else if (rawT === "number" || rawT.indexOf("رقم") !== -1) {
+          typeAr = "رقم";
+        } else if (rawT === "image_display" || rawT === "صورة" || rawT.indexOf("عرض صورة") !== -1) {
+          typeAr = "صورة";
+        } else if (rawT === "button_title" || rawT.indexOf("زر") !== -1) {
+          typeAr = "عنوان زر";
+        }
+
+        if (typeAr !== "صورة" && typeAr !== "عنوان زر" && q.question) {
+          answerHeaders.push(String(q.question).trim());
+        }
+
+        var tr = q.translations || {};
+        var qEnVal = tr.questionEn || "";
+        var qThVal = tr.questionTh || "";
+        var optsEnVal = Array.isArray(tr.optionsEn) ? tr.optionsEn.join("|||") : "";
+        var optsThVal = Array.isArray(tr.optionsTh) ? tr.optionsTh.join("|||") : "";
+
+        rows.push([
+          q.question || "",
+          q.description || "",
+          typeAr,
+          optStr,
+          reqStr,
+          q.imageUrl || "",
+          q.externalLink || "",
+          qEnVal,
+          qThVal,
+          optsEnVal,
+          optsThVal
+        ]);
       }
-
-      var reqStr = (q.required === true || q.required === "نعم") ? "نعم" : "لا";
-      
-      var rawT = (q.type || "text").toString().toLowerCase().trim();
-      var typeAr = "نص";
-      if (rawT === "choice" || (rawT.indexOf("اختيار") !== -1 && rawT.indexOf("2") === -1 && rawT.indexOf("3") === -1)) {
-        typeAr = "اختيارات";
-      } else if (rawT === "scored_choice" || rawT.indexOf("2") !== -1 || rawT.indexOf("نقاط") !== -1) {
-        typeAr = "اختيارات 2";
-      } else if (rawT === "multiple_choice" || rawT.indexOf("3") !== -1 || rawT.indexOf("متعدد") !== -1 || rawT.indexOf("checkbox") !== -1) {
-        typeAr = "اختيارات 3";
-      } else if (rawT === "file" || rawT.indexOf("ملف") !== -1 || rawT.indexOf("رفع") !== -1) {
-        typeAr = "رفع ملف";
-      } else if (rawT === "phone" || rawT.indexOf("هاتف") !== -1) {
-        typeAr = "رقم هاتف";
-      } else if (rawT === "email" || rawT.indexOf("ايميل") !== -1 || rawT.indexOf("بريد") !== -1) {
-        typeAr = "ايميل";
-      } else if (rawT === "number" || rawT.indexOf("رقم") !== -1) {
-        typeAr = "رقم";
-      } else if (rawT === "image_display" || rawT === "صورة" || rawT.indexOf("عرض صورة") !== -1) {
-        typeAr = "صورة";
-      } else if (rawT === "button_title" || rawT.indexOf("زر") !== -1) {
-        typeAr = "عنوان زر";
-      }
-
-      var tr = q.translations || {};
-      var qEnVal = tr.questionEn || "";
-      var qThVal = tr.questionTh || "";
-      var optsEnVal = Array.isArray(tr.optionsEn) ? tr.optionsEn.join("|||") : "";
-      var optsThVal = Array.isArray(tr.optionsTh) ? tr.optionsTh.join("|||") : "";
-
-      rows.push([
-        q.question || "",
-        q.description || "",
-        typeAr,
-        optStr,
-        reqStr,
-        q.imageUrl || "",
-        q.externalLink || "",
-        qEnVal,
-        qThVal,
-        optsEnVal,
-        optsThVal
-      ]);
     }
 
     sheet.getRange(1, 1, rows.length, 11).setValues(rows);
@@ -1031,10 +1025,36 @@ function saveFormQuestionsToSheet(questions) {
       .setHorizontalAlignment("center");
     sheet.setFrozenRows(1);
 
+    // إنشاء وتجهيز ورقة الإجابات المقابلة لهذا الاستبيان (RegistrationAnswers أو RegistrationAnswers_N)
+    answerHeaders.push("مجموع النقاط");
+    var aSheet = ss.getSheetByName(aSheetName);
+    if (!aSheet) {
+      aSheet = ss.insertSheet(aSheetName);
+      aSheet.getRange(1, 1, 1, answerHeaders.length).setValues([answerHeaders]);
+      aSheet.getRange(1, 1, 1, answerHeaders.length)
+        .setFontWeight("bold")
+        .setBackground("#1E293B")
+        .setFontColor("#F8FAFC")
+        .setHorizontalAlignment("center");
+      aSheet.getRange(1, answerHeaders.length)
+        .setFontWeight("bold")
+        .setBackground("#047857")
+        .setFontColor("#FFFFFF");
+      aSheet.setFrozenRows(1);
+    }
+
+    // تجهيز الأعمدة الثلاثة الخاصة بهذا الاستبيان في ورقة (المشتركين)
+    try {
+      ensureSurveyColumnsInSubscribersSheet(sId);
+    } catch (subColErr) {}
+
     return {
       success: true,
-      count: questions.length,
-      message: "تم حفظ وتحديث " + questions.length + " سؤال في ورقة RegistrationQuestions بنجاح!"
+      surveyId: sId,
+      questionsSheet: qSheetName,
+      answersSheet: aSheetName,
+      count: questions ? questions.length : 0,
+      message: "تم حفظ وتجهيز الاستبيان (" + sId + ") وورقتي الأسئلة والإجابات بنجاح!"
     };
   } catch (err) {
     return {
@@ -1047,14 +1067,43 @@ function saveFormQuestionsToSheet(questions) {
 
 // =========================================================================
 // 8. دوال إدارة ورقة (المشتركين) — التحقق من الدخول وتسجيل النتائج في نفس الصف
-// هيكل ورقة (المشتركين):
+// هيكل ورقة (المشتركين) المتعدد الاستبيانات:
 // العمود A (1): التسلسل
 // العمود B (2): Student ID
 // العمود C (3): Student Name
-// العمود D (4): مجموع النقاط
-// العمود E (5): الإجابات (|||)
-// العمود F (6): تحليل الذكاء الاصطناعي
+// الاستبيان 1 -> الأعمدة D, E, F (4, 5, 6): مجموع النقاط | الإجابات (|||) | تحليل الذكاء الاصطناعي
+// الاستبيان 2 -> الأعمدة G, H, I (7, 8, 9): مجموع النقاط (استبيان 2) | الإجابات (|||) - استبيان 2 | تحليل الذكاء الاصطناعي (استبيان 2)
+// الاستبيان N -> الأعمدة 4+(N-1)*3 ، 5+(N-1)*3 ، 6+(N-1)*3
 // =========================================================================
+
+function ensureSurveyColumnsInSubscribersSheet(surveyId) {
+  var sheet = getOrCreateSubscribersSheet();
+  var sId = Math.max(1, parseInt(surveyId || "1", 10) || 1);
+  for (var s = 1; s <= sId; s++) {
+    var colScore = 4 + (s - 1) * 3;
+    var colAns = 5 + (s - 1) * 3;
+    var colAi = 6 + (s - 1) * 3;
+
+    var curHeaders = sheet.getRange(1, colScore, 1, 3).getValues()[0];
+    var hScore = s === 1 ? "مجموع النقاط" : ("مجموع النقاط (استبيان " + s + ")");
+    var hAns = s === 1 ? "الإجابات (|||)" : ("الإجابات (|||) - استبيان " + s);
+    var hAi = s === 1 ? "تحليل الذكاء الاصطناعي" : ("تحليل الذكاء الاصطناعي (استبيان " + s + ")");
+
+    if (!curHeaders[0] || !curHeaders[1] || !curHeaders[2]) {
+      sheet.getRange(1, colScore, 1, 3).setValues([[
+        curHeaders[0] || hScore,
+        curHeaders[1] || hAns,
+        curHeaders[2] || hAi
+      ]]);
+      sheet.getRange(1, colScore, 1, 3)
+        .setFontWeight("bold")
+        .setBackground(s === 1 ? "#1E293B" : (s % 2 === 0 ? "#065F46" : "#1E3A8A"))
+        .setFontColor("#FFFFFF")
+        .setHorizontalAlignment("center");
+    }
+  }
+  return sheet;
+}
 
 function getOrCreateSubscribersSheet() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1077,7 +1126,6 @@ function getOrCreateSubscribersSheet() {
       .setHorizontalAlignment("center");
     sheet.setFrozenRows(1);
   } else {
-    // التأكد من وجود عناوين الأعمدة الـ 6 في الصف الأول إذا كانت فارغة
     var lastRow = sheet.getLastRow();
     if (lastRow === 0) {
       var initHeaders = [
@@ -1105,28 +1153,47 @@ function getSubscribersFromSheet() {
     var sheet = getOrCreateSubscribersSheet();
     var lastRow = sheet.getLastRow();
     if (lastRow <= 1) return [];
-    var data = sheet.getRange(1, 1, lastRow, Math.max(6, sheet.getLastColumn())).getValues();
+    var totalCols = Math.max(6, sheet.getLastColumn());
+    var maxSurveyCount = Math.max(1, Math.floor((totalCols - 3) / 3));
+    var data = sheet.getRange(1, 1, lastRow, 3 + maxSurveyCount * 3).getValues();
     var list = [];
     for (var r = 1; r < data.length; r++) {
       var row = data[r];
       var seq = row[0] !== undefined && row[0] !== null ? String(row[0]).trim() : "";
       var stuId = row[1] !== undefined && row[1] !== null ? String(row[1]).trim() : "";
       var stuName = row[2] !== undefined && row[2] !== null ? String(row[2]).trim() : "";
-      var score = row[3] !== undefined && row[3] !== null ? row[3] : "";
-      var combinedAns = row[4] !== undefined && row[4] !== null ? String(row[4]).trim() : "";
-      var aiAnal = row[5] !== undefined && row[5] !== null ? String(row[5]).trim() : "";
-
       if (!stuId && !stuName) continue;
+
+      var surveysMap = {};
+      for (var s = 1; s <= maxSurveyCount; s++) {
+        var cScoreIdx = 3 + (s - 1) * 3;
+        var cAnsIdx = 4 + (s - 1) * 3;
+        var cAiIdx = 5 + (s - 1) * 3;
+        var sScore = row[cScoreIdx] !== undefined && row[cScoreIdx] !== null ? row[cScoreIdx] : "";
+        var sAns = row[cAnsIdx] !== undefined && row[cAnsIdx] !== null ? String(row[cAnsIdx]).trim() : "";
+        var sAi = row[cAiIdx] !== undefined && row[cAiIdx] !== null ? String(row[cAiIdx]).trim() : "";
+        var sHasAns = Boolean((sAns && sAns !== "-") || (sAi && sAi !== "-" && sAi.length > 5));
+        surveysMap[s] = {
+          surveyId: s,
+          totalScore: sScore,
+          combinedAnswers: sAns,
+          aiAnalysis: sAi,
+          hasAnswered: sHasAns
+        };
+      }
+
+      var s1 = surveysMap[1] || { totalScore: "", combinedAnswers: "", aiAnalysis: "", hasAnswered: false };
 
       list.push({
         rowIndex: r + 1,
         sequence: seq || r,
         studentId: stuId,
         studentName: stuName,
-        totalScore: score,
-        combinedAnswers: combinedAns,
-        aiAnalysis: aiAnal,
-        hasAnswered: Boolean(combinedAns && combinedAns !== "-")
+        totalScore: s1.totalScore,
+        combinedAnswers: s1.combinedAnswers,
+        aiAnalysis: s1.aiAnalysis,
+        hasAnswered: s1.hasAnswered,
+        surveys: surveysMap
       });
     }
     return list;
@@ -1148,11 +1215,11 @@ function normalizeSubIdKey(val) {
 
 function updateSubscriberRowInSheet(postData) {
   try {
-    var sheet = getOrCreateSubscribersSheet();
+    var surveyId = Math.max(1, parseInt(postData.surveyId || "1", 10) || 1);
+    var sheet = ensureSurveyColumnsInSubscribersSheet(surveyId);
     var stuId = String(postData.studentId || postData.registrationId || "").trim();
     var stuName = String(postData.studentName || postData.name || "").trim();
 
-    // منع إضافة أي صف فارغ بدون رقم مشترك أو اسم
     if (!stuId && !stuName) {
       return {
         success: false,
@@ -1176,7 +1243,6 @@ function updateSubscriberRowInSheet(postData) {
     }
     var aiAnal = rawAi;
 
-    // تنظيف أي صفوف فارغة سابقة في ورقة المشتركين (التي لا تحتوي على Student ID ولا Student Name)
     var lastRow = sheet.getLastRow();
     if (lastRow > 1) {
       try {
@@ -1196,7 +1262,7 @@ function updateSubscriberRowInSheet(postData) {
     var normTargetId = normalizeSubIdKey(stuId);
 
     if (lastRow >= 1) {
-      var values = sheet.getRange(1, 1, lastRow, 6).getValues();
+      var values = sheet.getRange(1, 1, lastRow, 3).getValues();
       for (var r = 0; r < values.length; r++) {
         var rowId = values[r][1] !== undefined && values[r][1] !== null ? String(values[r][1]).trim() : "";
         var rowName = values[r][2] !== undefined && values[r][2] !== null ? String(values[r][2]).trim() : "";
@@ -1211,8 +1277,12 @@ function updateSubscriberRowInSheet(postData) {
       }
     }
 
+    // تحديد الأعمدة الثلاثة الخاصة بهذا الاستبيان (1 -> 4,5,6 | 2 -> 7,8,9 | N -> 4+(N-1)*3...)
+    var colScore = 4 + (surveyId - 1) * 3;
+    var colAns = 5 + (surveyId - 1) * 3;
+    var colAi = 6 + (surveyId - 1) * 3;
+
     if (targetRow !== -1) {
-      // إذا كان عمود التسلسل (A) فارغاً في صف المشترك، نضع رقم التسلسل تلقائياً
       try {
         var currentSeq = sheet.getRange(targetRow, 1).getValue();
         if (currentSeq === "" || currentSeq === null || currentSeq === undefined) {
@@ -1220,31 +1290,30 @@ function updateSubscriberRowInSheet(postData) {
         }
       } catch (e) {}
 
-      // كتابة النتائج في نفس صف المشترك تماماً وبشكل مستقل لكل خلية:
-      // العمود الرابع (4): عدد مجموع النقاط
-      // العمود الخامس (5): تجميع كل الإجابات بفاصل (|||)
-      // العمود السادس (6): تحليل الذكاء الاصطناعي
-      try { sheet.getRange(targetRow, 4).setValue(scoreVal); } catch (e4) {}
-      try { sheet.getRange(targetRow, 5).setNumberFormat("@").setValue(combinedAns); } catch (e5) {}
-      try { sheet.getRange(targetRow, 6).setValue(aiAnal); } catch (e6) {}
+      try { sheet.getRange(targetRow, colScore).setValue(scoreVal); } catch (e4) {}
+      try { sheet.getRange(targetRow, colAns).setNumberFormat("@").setValue(combinedAns); } catch (e5) {}
+      try { sheet.getRange(targetRow, colAi).setValue(aiAnal); } catch (e6) {}
 
       return {
         success: true,
         rowIndex: targetRow,
         studentId: stuId,
-        message: "تم تسجيل النتائج في نفس صف المشترك رقم (" + stuId + ") في ورقة المشتركين بنجاح!"
+        surveyId: surveyId,
+        message: "تم تسجيل نتائج الاستبيان (" + surveyId + ") في نفس صف المشترك رقم (" + stuId + ") في ورقة المشتركين بنجاح!"
       };
     } else {
-      // إذا لم يكن المشترك مضافاً بعد، نضيف له صفاً جديداً في ورقة المشتركين
       var newSeq = lastRow > 0 ? lastRow : 1;
-      sheet.appendRow([newSeq, stuId, stuName, scoreVal, combinedAns, aiAnal]);
+      sheet.appendRow([newSeq, stuId, stuName]);
       var appendedRow = sheet.getLastRow();
-      try { sheet.getRange(appendedRow, 5).setNumberFormat("@"); } catch (e) {}
+      try { sheet.getRange(appendedRow, colScore).setValue(scoreVal); } catch (e4) {}
+      try { sheet.getRange(appendedRow, colAns).setNumberFormat("@").setValue(combinedAns); } catch (e5) {}
+      try { sheet.getRange(appendedRow, colAi).setValue(aiAnal); } catch (e6) {}
       return {
         success: true,
         rowIndex: appendedRow,
         studentId: stuId,
-        message: "تمت إضافة صف المشترك وتسجيل نتائجه في ورقة المشتركين بنجاح!"
+        surveyId: surveyId,
+        message: "تمت إضافة صف المشترك وتسجيل نتائجه للاستبيان (" + surveyId + ") في ورقة المشتركين بنجاح!"
       };
     }
   } catch (err) {
@@ -1260,31 +1329,45 @@ function saveSubscribersListToSheet(subscribers) {
     if (!subscribers || !Array.isArray(subscribers)) {
       return { success: false, error: "Invalid subscribers array" };
     }
-    var sheet = getOrCreateSubscribersSheet();
-    var headers = [
-      "التسلسل",
-      "Student ID",
-      "Student Name",
-      "مجموع النقاط",
-      "الإجابات (|||)",
-      "تحليل الذكاء الاصطناعي"
-    ];
+    var maxSurvey = 1;
+    for (var m = 0; m < subscribers.length; m++) {
+      var sub = subscribers[m];
+      if (sub && sub.surveys) {
+        for (var k in sub.surveys) {
+          var sNum = parseInt(k, 10);
+          if (!isNaN(sNum) && sNum > maxSurvey) maxSurvey = sNum;
+        }
+      }
+    }
+
+    var sheet = ensureSurveyColumnsInSubscribersSheet(maxSurvey);
+    var headers = ["التسلسل", "Student ID", "Student Name"];
+    for (var s = 1; s <= maxSurvey; s++) {
+      headers.push(s === 1 ? "مجموع النقاط" : ("مجموع النقاط (استبيان " + s + ")"));
+      headers.push(s === 1 ? "الإجابات (|||)" : ("الإجابات (|||) - استبيان " + s));
+      headers.push(s === 1 ? "تحليل الذكاء الاصطناعي" : ("تحليل الذكاء الاصطناعي (استبيان " + s + ")"));
+    }
+
     sheet.clearContents();
     var rows = [headers];
     for (var i = 0; i < subscribers.length; i++) {
-      var s = subscribers[i];
-      if (!s) continue;
-      rows.push([
-        s.sequence || (i + 1),
-        s.studentId || "",
-        s.studentName || "",
-        s.totalScore !== undefined ? s.totalScore : "",
-        s.combinedAnswers || "",
-        s.aiAnalysis || ""
-      ]);
+      var item = subscribers[i];
+      if (!item) continue;
+      var row = [
+        item.sequence || (i + 1),
+        item.studentId || "",
+        item.studentName || ""
+      ];
+      for (var si = 1; si <= maxSurvey; si++) {
+        var sData = (item.surveys && item.surveys[si]) ? item.surveys[si] : (si === 1 ? item : {});
+        row.push(sData.totalScore !== undefined ? sData.totalScore : "");
+        row.push(sData.combinedAnswers || "");
+        row.push(sData.aiAnalysis || "");
+      }
+      rows.push(row);
     }
-    sheet.getRange(1, 1, rows.length, 6).setValues(rows);
-    sheet.getRange(1, 1, 1, 6)
+    sheet.getRange(1, 1, rows.length, headers.length).setValues(rows);
+    sheet.getRange(1, 1, 1, headers.length)
       .setFontWeight("bold")
       .setBackground("#1E293B")
       .setFontColor("#FFFFFF")

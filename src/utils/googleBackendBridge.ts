@@ -28,9 +28,85 @@ import {
   RegistrationQuestion,
   SheetAnswerRecord,
   SheetAnswersData,
-  SubscriberRecord
+  SubscriberRecord,
+  SubscriberSurveyResult
 } from "../types";
 import { getAnalysisSettings } from "./aiAnalyzer";
+import {
+  getSheetNamesForSurvey,
+  getSurveysList,
+  ensureSurveysUpTo
+} from "./surveyManager";
+
+export const DEFAULT_STAGE_SURVEY_QUESTIONS: RegistrationQuestion[] = [
+  {
+    id: 1,
+    question: "1. كيف تقيّم مدى استفادتك وتقدمك في هذه المرحلة التدريبية؟",
+    type: "scored_choice",
+    options: ["4 - استفادة ممتازة وتقدم واضح", "3 - استفادة جيدة جداً", "2 - استفادة متوسطة", "1 - أحتاج لمزيد من التدريب"],
+    required: true
+  },
+  {
+    id: 2,
+    question: "2. ما مدى التزامك بالتدريب اليومي وتطبيق ملاحظات المعلم؟",
+    type: "scored_choice",
+    options: ["4 - التزام يومي كامل ودقيق", "3 - التزام غالبية الأيام", "2 - التزام متقطع", "1 - واجهت صعوبة في الالتزام"],
+    required: true
+  },
+  {
+    id: 3,
+    question: "3. ما هي أبرز المهارات أو الحروف التي شعرت بتحسن واضح فيها؟",
+    type: "text",
+    required: true
+  },
+  {
+    id: 4,
+    question: "4. هل لديك أي صعوبات أو ملاحظات تود مشاركتها مع المعلم والإدارة؟",
+    type: "text",
+    required: false
+  }
+];
+
+function getQuestionsCacheKeys(surveyId: number = 1) {
+  const cleanId = Math.max(1, Math.floor(Number(surveyId) || 1));
+  if (cleanId === 1) {
+    return {
+      cacheKey: "thnoon_cached_registration_questions",
+      modifiedKey: "thnoon_questions_admin_modified"
+    };
+  }
+  return {
+    cacheKey: `thnoon_cached_registration_questions_s${cleanId}`,
+    modifiedKey: `thnoon_questions_admin_modified_s${cleanId}`
+  };
+}
+
+const LOCAL_ANSWERS_STORAGE_PREFIX = "thnoon_local_answers_records_v1_s";
+
+export function getLocalSurveyAnswers(surveyId: number = 1): SheetAnswerRecord[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const cleanId = Math.max(1, Math.floor(Number(surveyId) || 1));
+    const raw = localStorage.getItem(`${LOCAL_ANSWERS_STORAGE_PREFIX}${cleanId}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (e) {}
+  return [];
+}
+
+export function saveLocalSurveyAnswerRecord(surveyId: number, record: SheetAnswerRecord): void {
+  if (typeof window === "undefined") return;
+  try {
+    const cleanId = Math.max(1, Math.floor(Number(surveyId) || 1));
+    const existing = getLocalSurveyAnswers(cleanId);
+    const normId = normalizeStudentId(record.registrationId);
+    const filtered = existing.filter((r) => normalizeStudentId(r.registrationId) !== normId);
+    const updated = [record, ...filtered];
+    localStorage.setItem(`${LOCAL_ANSWERS_STORAGE_PREFIX}${cleanId}`, JSON.stringify(updated));
+  } catch (e) {}
+}
 
 /**
  * Formats Google Drive / thumbnail URLs for robust embedding
@@ -473,17 +549,21 @@ export async function testSheetConnection(
 export async function fetchFormQuestionsBridge(
   explicitScriptUrl?: string,
   explicitSpreadsheetId?: string,
-  forceFromSheet: boolean = false
+  forceFromSheet: boolean = false,
+  surveyId: number = 1
 ): Promise<RegistrationQuestion[]> {
   const targetScriptUrl = explicitScriptUrl || getActiveScriptUrl();
   const targetSpreadsheetId = explicitSpreadsheetId || getActiveSpreadsheetId();
+  const cleanSurveyId = Math.max(1, Math.floor(Number(surveyId) || 1));
+  const { questionsSheetName } = getSheetNamesForSurvey(cleanSurveyId);
+  const { cacheKey, modifiedKey } = getQuestionsCacheKeys(cleanSurveyId);
 
   // If the admin modified questions in the dashboard and we are not forcing a sheet reload,
   // prioritize the admin's saved questions so GVIZ CDN caching doesn't overwrite recent edits/deletions
   if (!forceFromSheet && typeof window !== "undefined") {
     try {
-      const isAdminModified = localStorage.getItem("thnoon_questions_admin_modified") === "true";
-      const cached = localStorage.getItem("thnoon_cached_registration_questions");
+      const isAdminModified = localStorage.getItem(modifiedKey) === "true";
+      const cached = localStorage.getItem(cacheKey);
       if (isAdminModified && cached) {
         const parsed = JSON.parse(cached);
         if (Array.isArray(parsed) && parsed.length > 0) {
@@ -692,30 +772,65 @@ export async function fetchFormQuestionsBridge(
     return parsedQuestions.length > 0 ? parsedQuestions : null;
   };
 
-  // 1. Direct Google Visualization API (Lightning-fast directly from Google global CDN)
+  // 1. For surveyId > 1, try Apps Script GET first so we don't accidentally get Survey 1 fallback from GVIZ if sheet isn't created yet
+  if (cleanSurveyId > 1) {
+    try {
+      const gasUrl = `${targetScriptUrl}${targetScriptUrl.includes("?") ? "&" : "?"}action=getFormQuestions&surveyId=${cleanSurveyId}&sheetName=${encodeURIComponent(questionsSheetName)}&_cb=${Date.now()}`;
+      const res = await fetch(gasUrl, { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.questions && Array.isArray(data.questions) && data.questions.length > 0) {
+          const enriched = data.questions.map((q: any, idx: number) => ({
+            ...q,
+            id: q.id || idx + 1,
+            translations: {
+              ...getEffectiveQuestionTranslation(q.question || "", q.options),
+              ...(q.translations || {})
+            }
+          }));
+          if (typeof window !== "undefined") {
+            try {
+              localStorage.setItem(cacheKey, JSON.stringify(enriched));
+            } catch (e) {}
+          }
+          return enriched;
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 2. Direct Google Visualization API (Lightning-fast directly from Google global CDN)
   try {
-    const primaryGvizUrl = `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/gviz/tq?tqx=out:json&headers=1&sheet=RegistrationQuestions&_cb=${Date.now()}`;
+    const primaryGvizUrl = `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/gviz/tq?tqx=out:json&headers=1&sheet=${encodeURIComponent(questionsSheetName)}&_cb=${Date.now()}`;
     const gvizRes = await fetch(primaryGvizUrl, { cache: "no-store" });
     if (gvizRes.ok) {
       const text = await gvizRes.text();
       const parsed = parseGvizText(text);
       if (parsed && parsed.length > 0) {
-        if (typeof window !== "undefined") {
-          try {
-            localStorage.setItem("thnoon_cached_registration_questions", JSON.stringify(parsed));
-            if (forceFromSheet) {
-              localStorage.removeItem("thnoon_questions_admin_modified");
-            }
-          } catch (e) {}
+        // Guard against GVIZ returning Survey 1 (32 questions starting with "ما اسمك الكامل") when requesting Survey > 1 that doesn't exist in Sheet yet
+        const isDefaultSurvey1Fallback =
+          cleanSurveyId > 1 &&
+          parsed.length >= 25 &&
+          String(parsed[0]?.question || "").includes("ما اسمك الكامل");
+
+        if (!isDefaultSurvey1Fallback) {
+          if (typeof window !== "undefined") {
+            try {
+              localStorage.setItem(cacheKey, JSON.stringify(parsed));
+              if (forceFromSheet) {
+                localStorage.removeItem(modifiedKey);
+              }
+            } catch (e) {}
+          }
+          return parsed;
         }
-        return parsed;
       }
     }
   } catch (gvizErr) {}
 
-  // 2. Direct Apps Script Web App GET (?action=getFormQuestions)
+  // 3. Direct Apps Script Web App GET (?action=getFormQuestions)
   try {
-    const gasUrl = `${targetScriptUrl}${targetScriptUrl.includes("?") ? "&" : "?"}action=getFormQuestions&_cb=${Date.now()}`;
+    const gasUrl = `${targetScriptUrl}${targetScriptUrl.includes("?") ? "&" : "?"}action=getFormQuestions&surveyId=${cleanSurveyId}&sheetName=${encodeURIComponent(questionsSheetName)}&_cb=${Date.now()}`;
     const res = await fetch(gasUrl, { cache: "no-store" });
     if (res.ok) {
       const data = await res.json();
@@ -730,7 +845,7 @@ export async function fetchFormQuestionsBridge(
         }));
         if (typeof window !== "undefined") {
           try {
-            localStorage.setItem("thnoon_cached_registration_questions", JSON.stringify(enriched));
+            localStorage.setItem(cacheKey, JSON.stringify(enriched));
           } catch (e) {}
         }
         return enriched;
@@ -738,10 +853,10 @@ export async function fetchFormQuestionsBridge(
     }
   } catch (e) {}
 
-  // 3. Fallback to cached in LocalStorage
+  // 4. Fallback to cached in LocalStorage
   if (typeof window !== "undefined") {
     try {
-      const cached = localStorage.getItem("thnoon_cached_registration_questions");
+      const cached = localStorage.getItem(cacheKey);
       if (cached) {
         const parsed = JSON.parse(cached);
         if (Array.isArray(parsed) && parsed.length > 0) {
@@ -751,8 +866,8 @@ export async function fetchFormQuestionsBridge(
     } catch (e) {}
   }
 
-  // 4. Final fallback: DEFAULT_FORM_QUESTIONS
-  return DEFAULT_FORM_QUESTIONS;
+  // 5. Final fallback: DEFAULT_FORM_QUESTIONS for Survey 1, or DEFAULT_STAGE_SURVEY_QUESTIONS for Survey > 1
+  return cleanSurveyId === 1 ? DEFAULT_FORM_QUESTIONS : DEFAULT_STAGE_SURVEY_QUESTIONS;
 }
 
 /**
@@ -968,8 +1083,14 @@ export async function submitRegistrationBridge(
           .join(" ||| ")
       : (payload.combinedAnswers || "").replace(/data:[^|]+/g, "[صورة مرفقة]");
 
+  const cleanSurveyId = Math.max(1, Math.floor(Number(payload.surveyId) || 1));
+  const { questionsSheetName, answersSheetName } = getSheetNamesForSurvey(cleanSurveyId);
+
   const fullPayload: FormSubmissionPayload = {
     ...payload,
+    surveyId: cleanSurveyId,
+    questionsSheet: payload.questionsSheet || questionsSheetName,
+    answersSheet: payload.answersSheet || answersSheetName,
     registrationId: regId,
     name: studentName,
     timestamp: formattedTimestamp,
@@ -983,19 +1104,50 @@ export async function submitRegistrationBridge(
     telegramConfig: activeTelegramConfig
   };
 
-  // Helper to mark subscriber as answered in local cache once submitted
+  // Helper to mark subscriber as answered in local cache AND save in local per-survey answers log immediately
   const markLocalSuccess = () => {
     if (regId) {
-      saveLocalSubscriberOverride(regId, {
-        studentId: regId,
-        studentName: studentName,
+      saveLocalSubscriberOverride(
+        regId,
+        {
+          studentId: regId,
+          studentName: studentName,
+          totalScore: payload.totalScore ?? 0,
+          combinedAnswers: combinedAnswersStr,
+          aiAnalysis: payload.aiAnalysis || "",
+          hasAnswered: true
+        },
+        cleanSurveyId
+      );
+
+      const ansMap: Record<string, string> = {};
+      const rawRowMap: Record<string, any> = {
+        "التاريخ والوقت": formattedTimestamp,
+        "رقم التسجيل": regId,
+        "الاسم الكامل للمشترك": studentName
+      };
+      cleanedAnswers.forEach((a) => {
+        if (a && a.question) {
+          ansMap[a.question] = a.answer || "";
+          rawRowMap[a.question] = a.answer || "";
+        }
+      });
+      rawRowMap["مجموع النقاط"] = payload.totalScore ?? 0;
+
+      saveLocalSurveyAnswerRecord(cleanSurveyId, {
+        rowIndex: Date.now(),
+        timestamp: formattedTimestamp,
+        registrationId: regId,
+        name: studentName,
         totalScore: payload.totalScore ?? 0,
-        combinedAnswers: combinedAnswersStr,
-        aiAnalysis: payload.aiAnalysis || "",
-        hasAnswered: true
+        answers: ansMap,
+        rawRow: rawRowMap
       });
     }
   };
+
+  // Always record locally first ("النظام يعتمد على التسجيل داخل النظام أولا ثم يرسل إلى الشيت")
+  markLocalSuccess();
 
   // 1. Try Local API route or Vercel Serverless Function (/api/register)
   try {
@@ -1139,102 +1291,188 @@ export function isTotalScoreHeader(headerStr: string | undefined | null): boolea
  */
 export async function fetchRegistrationAnswersBridge(
   explicitScriptUrl?: string,
-  explicitSpreadsheetId?: string
+  explicitSpreadsheetId?: string,
+  surveyId: number = 1
 ): Promise<SheetAnswersData> {
   const targetSpreadsheetId = explicitSpreadsheetId || getActiveSpreadsheetId();
   const targetScriptUrl = explicitScriptUrl || getActiveScriptUrl();
+  const cleanSurveyId = Math.max(1, Math.floor(Number(surveyId) || 1));
+  const { answersSheetName } = getSheetNamesForSurvey(cleanSurveyId);
+  const localRecords = getLocalSurveyAnswers(cleanSurveyId);
 
-  // 1. Primary: Direct GVIZ API read
-  try {
-    const gvizUrl = `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/gviz/tq?tqx=out:json&sheet=RegistrationAnswers&_cb=${Date.now()}`;
-    const res = await fetch(gvizUrl, { cache: "no-store" });
-    if (res.ok) {
-      const text = await res.text();
-      const jsonStart = text.indexOf("{");
-      const jsonEnd = text.lastIndexOf("}");
-      if (jsonStart !== -1 && jsonEnd !== -1) {
-        const json = JSON.parse(text.substring(jsonStart, jsonEnd + 1));
-        if (json?.table?.rows) {
-          const cols = json.table.cols || [];
-          let headers = cols.map((c: any) => (c?.label ? String(c.label).trim() : ""));
-          const rows = json.table.rows || [];
+  const mergeWithLocalRecords = (sheetData: SheetAnswersData): SheetAnswersData => {
+    if (localRecords.length === 0) return sheetData;
+    const existingIds = new Set(
+      sheetData.records.map((r) => normalizeStudentId(r.registrationId))
+    );
+    const missingLocals = localRecords.filter(
+      (lr) => !existingIds.has(normalizeStudentId(lr.registrationId))
+    );
+    if (missingLocals.length === 0) return sheetData;
 
-          let dataStartIdx = 0;
-          // If labels were missing, read headers from row 0
-          if (headers.every((h: string) => !h) && rows.length > 0) {
-            headers = (rows[0]?.c || []).map((cell: any) =>
-              cell && cell.v !== null && cell.v !== undefined ? String(cell.v).trim() : ""
-            );
-            dataStartIdx = 1;
+    const allHeaders = [...sheetData.headers];
+    missingLocals.forEach((lr) => {
+      Object.keys(lr.answers || {}).forEach((qKey) => {
+        if (!allHeaders.includes(qKey)) {
+          // Insert before مجموع النقاط if present
+          const scoreIdx = allHeaders.findIndex((h) => isTotalScoreHeader(h));
+          if (scoreIdx !== -1) {
+            allHeaders.splice(scoreIdx, 0, qKey);
+          } else {
+            allHeaders.push(qKey);
           }
+        }
+      });
+    });
 
-          // Identify the total score header if present
-          const totalScoreHeader =
-            headers.find((h: string) => isTotalScoreHeader(h)) ||
-            (headers.length > 3 && isTotalScoreHeader(headers[headers.length - 1])
-              ? headers[headers.length - 1]
-              : undefined);
+    return {
+      ...sheetData,
+      headers: allHeaders,
+      records: [...missingLocals, ...sheetData.records]
+    };
+  };
 
-          const records: SheetAnswerRecord[] = [];
-          for (let r = dataStartIdx; r < rows.length; r++) {
-            const rowCells = rows[r]?.c || [];
-            const valAt = (idx: number): string => {
-              const cell = rowCells[idx];
-              if (!cell || cell.v === null || cell.v === undefined) return "";
-              return String(cell.f || cell.v).trim();
-            };
+  // 1. For surveyId > 1, try Apps Script GET first so GVIZ doesn't return Survey 1's sheet if RegistrationAnswers_N isn't created yet
+  if (cleanSurveyId > 1) {
+    try {
+      const gasUrl = `${targetScriptUrl}${targetScriptUrl.includes("?") ? "&" : "?"}action=getAnswers&surveyId=${cleanSurveyId}&sheetName=${encodeURIComponent(answersSheetName)}&_cb=${Date.now()}`;
+      const gasRes = await fetch(gasUrl, { cache: "no-store" });
+      if (gasRes.ok) {
+        const data = await gasRes.json();
+        if (data && Array.isArray(data.records)) {
+          const rawRecs = data.records;
+          const headers =
+            data.headers && data.headers.length > 0
+              ? data.headers
+              : ["التاريخ والوقت", "رقم التسجيل", "الاسم الكامل للمشترك", "مجموع النقاط"];
+          const totalScoreHeader = headers.find((h: string) => isTotalScoreHeader(h));
+          const records: SheetAnswerRecord[] = rawRecs
+            .map((rec: any, idx: number) => {
+              const rowData = rec.rowData || rec;
+              const timestamp = String(rowData["التاريخ والوقت"] || rowData["تاريخ التسجيل"] || rowData[headers[0]] || "");
+              const regId = String(rowData["رقم التسجيل"] || rowData["رقم المشترك"] || rowData[headers[1]] || "").trim();
+              const name = String(rowData["الاسم الكامل للمشترك"] || rowData["اسم المشترك"] || rowData["الاسم"] || rowData[headers[2]] || "").trim();
+              const totalScore = totalScoreHeader ? rowData[totalScoreHeader] : (rowData["مجموع النقاط"] || "");
 
-            const timestamp = valAt(0);
-            const regId = valAt(1);
-            const name = valAt(2);
+              const answers: Record<string, string> = {};
+              headers.forEach((h: string, cIdx: number) => {
+                if (cIdx >= 3 && h !== totalScoreHeader) {
+                  answers[h] = String(rowData[h] || "");
+                }
+              });
 
-            // Ignore empty/ghost rows where both registrationId and name are missing
-            if (!regId && !name) continue;
+              return {
+                rowIndex: rec.rowIndex || idx + 1,
+                timestamp,
+                registrationId: regId,
+                name,
+                totalScore,
+                answers,
+                rawRow: rowData
+              };
+            })
+            .filter((r: SheetAnswerRecord) => Boolean(r.registrationId || r.name));
 
-            const answers: Record<string, string> = {};
-            const rawRow: Record<string, any> = {};
-            let totalScore: string | number = "";
-
-            headers.forEach((h: string, cIdx: number) => {
-              const cellVal = valAt(cIdx);
-              const colKey = h || `عمود ${cIdx + 1}`;
-              rawRow[colKey] = cellVal;
-              if (cIdx >= 3 && colKey !== totalScoreHeader) {
-                answers[colKey] = cellVal;
-              }
-              if (colKey === totalScoreHeader) {
-                totalScore = cellVal;
-              }
-            });
-
-            records.push({
-              rowIndex: r + 1,
-              timestamp,
-              registrationId: regId,
-              name,
-              totalScore,
-              answers,
-              rawRow
-            });
-          }
-
-          // Return latest records first
-          return {
+          return mergeWithLocalRecords({
             headers,
-            records: records.reverse(),
+            records,
             totalScoreHeader,
             lastUpdated: new Date().toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })
-          };
+          });
         }
       }
-    }
-  } catch (gvizErr) {
-    console.warn("GVIZ answers read error, falling back to Apps Script:", gvizErr);
+    } catch (e) {}
   }
 
-  // 2. Secondary: Apps Script GET /action=getAnswers
+  // 2. Direct GVIZ API read (for Survey 1, or if Survey > 1 sheet exists)
+  if (cleanSurveyId === 1) {
+    try {
+      const gvizUrl = `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(answersSheetName)}&_cb=${Date.now()}`;
+      const res = await fetch(gvizUrl, { cache: "no-store" });
+      if (res.ok) {
+        const text = await res.text();
+        const jsonStart = text.indexOf("{");
+        const jsonEnd = text.lastIndexOf("}");
+        if (jsonStart !== -1 && jsonEnd !== -1) {
+          const json = JSON.parse(text.substring(jsonStart, jsonEnd + 1));
+          if (json?.table?.rows) {
+            const cols = json.table.cols || [];
+            let headers = cols.map((c: any) => (c?.label ? String(c.label).trim() : ""));
+            const rows = json.table.rows || [];
+
+            let dataStartIdx = 0;
+            if (headers.every((h: string) => !h) && rows.length > 0) {
+              headers = (rows[0]?.c || []).map((cell: any) =>
+                cell && cell.v !== null && cell.v !== undefined ? String(cell.v).trim() : ""
+              );
+              dataStartIdx = 1;
+            }
+
+            const totalScoreHeader =
+              headers.find((h: string) => isTotalScoreHeader(h)) ||
+              (headers.length > 3 && isTotalScoreHeader(headers[headers.length - 1])
+                ? headers[headers.length - 1]
+                : undefined);
+
+            const records: SheetAnswerRecord[] = [];
+            for (let r = dataStartIdx; r < rows.length; r++) {
+              const rowCells = rows[r]?.c || [];
+              const valAt = (idx: number): string => {
+                const cell = rowCells[idx];
+                if (!cell || cell.v === null || cell.v === undefined) return "";
+                return String(cell.f || cell.v).trim();
+              };
+
+              const timestamp = valAt(0);
+              const regId = valAt(1);
+              const name = valAt(2);
+
+              if (!regId && !name) continue;
+
+              const answers: Record<string, string> = {};
+              const rawRow: Record<string, any> = {};
+              let totalScore: string | number = "";
+
+              headers.forEach((h: string, cIdx: number) => {
+                const cellVal = valAt(cIdx);
+                const colKey = h || `عمود ${cIdx + 1}`;
+                rawRow[colKey] = cellVal;
+                if (cIdx >= 3 && colKey !== totalScoreHeader) {
+                  answers[colKey] = cellVal;
+                }
+                if (colKey === totalScoreHeader) {
+                  totalScore = cellVal;
+                }
+              });
+
+              records.push({
+                rowIndex: r + 1,
+                timestamp,
+                registrationId: regId,
+                name,
+                totalScore,
+                answers,
+                rawRow
+              });
+            }
+
+            return mergeWithLocalRecords({
+              headers,
+              records: records.reverse(),
+              totalScoreHeader,
+              lastUpdated: new Date().toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })
+            });
+          }
+        }
+      }
+    } catch (gvizErr) {
+      console.warn("GVIZ answers read error, falling back to Apps Script:", gvizErr);
+    }
+  }
+
+  // 3. Secondary: Apps Script GET /action=getAnswers
   try {
-    const gasUrl = `${targetScriptUrl}${targetScriptUrl.includes("?") ? "&" : "?"}action=getAnswers&_cb=${Date.now()}`;
+    const gasUrl = `${targetScriptUrl}${targetScriptUrl.includes("?") ? "&" : "?"}action=getAnswers&surveyId=${cleanSurveyId}&sheetName=${encodeURIComponent(answersSheetName)}&_cb=${Date.now()}`;
     const gasRes = await fetch(gasUrl, { cache: "no-store" });
     if (gasRes.ok) {
       const data = await gasRes.json();
@@ -1270,60 +1508,71 @@ export async function fetchRegistrationAnswersBridge(
           })
           .filter((r: SheetAnswerRecord) => Boolean(r.registrationId || r.name));
 
-        return {
+        return mergeWithLocalRecords({
           headers,
           records,
           totalScoreHeader,
           lastUpdated: new Date().toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })
-        };
+        });
       }
     }
   } catch (gasErr) {
     console.warn("Apps Script answers read error:", gasErr);
   }
 
-  // 3. Fallback: Empty data
-  return {
+  // 4. Fallback: Local records or Empty data
+  return mergeWithLocalRecords({
     headers: ["التاريخ والوقت", "رقم التسجيل", "الاسم الكامل للمشترك", "مجموع النقاط"],
     records: [],
+    totalScoreHeader: "مجموع النقاط",
     lastUpdated: new Date().toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })
-  };
+  });
 }
 
 /**
- * Saves and updates the questions in RegistrationQuestions sheet via Google Apps Script
+ * Saves and updates the questions in RegistrationQuestions (or RegistrationQuestions_N) sheet via Google Apps Script
+ * and automatically provisions the corresponding answers sheet (RegistrationAnswers_N) and 3 columns in المشتركين.
  */
 export async function saveFormQuestionsBridge(
   questions: RegistrationQuestion[],
-  explicitScriptUrl?: string
+  explicitScriptUrl?: string,
+  surveyId: number = 1
 ): Promise<{ success: boolean; message: string }> {
   const targetScriptUrl = explicitScriptUrl || getActiveScriptUrl();
+  const cleanSurveyId = Math.max(1, Math.floor(Number(surveyId) || 1));
+  const { questionsSheetName, answersSheetName } = getSheetNamesForSurvey(cleanSurveyId);
+  const { cacheKey, modifiedKey } = getQuestionsCacheKeys(cleanSurveyId);
 
   // 1. Save immediately to LocalStorage cache so UI reflects instant changes
   if (typeof window !== "undefined") {
     try {
-      localStorage.setItem("thnoon_cached_registration_questions", JSON.stringify(questions));
-      localStorage.setItem("thnoon_questions_admin_modified", "true");
+      localStorage.setItem(cacheKey, JSON.stringify(questions));
+      localStorage.setItem(modifiedKey, "true");
     } catch (e) {}
   }
+
+  const payload = {
+    action: "saveFormQuestions",
+    surveyId: cleanSurveyId,
+    questionsSheet: questionsSheetName,
+    answersSheet: answersSheetName,
+    scriptUrl: targetScriptUrl,
+    questions
+  };
 
   // 2. Try POST via Node / Vercel API proxy
   try {
     const proxyRes = await fetch("/api/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "saveFormQuestions",
-        scriptUrl: targetScriptUrl,
-        questions
-      })
+      body: JSON.stringify(payload)
     });
     if (proxyRes.ok) {
       const json = await proxyRes.json();
       if (json && json.success) {
         return {
           success: true,
-          message: "تم حفظ وتحديث ورقة RegistrationQuestions في قوقل شيت بنجاح!"
+          message: `تم حفظ وتحديث أسئلة الاستبيان (${cleanSurveyId}) في الورقة (${questionsSheetName}) وتجهيز ورقة الإجابات (${answersSheetName}) بنجاح!`
         };
       }
     }
@@ -1334,16 +1583,13 @@ export async function saveFormQuestionsBridge(
     const directRes = await fetch(targetScriptUrl, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({
-        action: "saveFormQuestions",
-        questions
-      })
+      body: JSON.stringify(payload)
     });
     if (directRes.ok) {
       const json = await directRes.json().catch(() => null);
       return {
         success: true,
-        message: json?.message || "تم حفظ وتحديث ورقة RegistrationQuestions بنجاح!"
+        message: json?.message || `تم حفظ وتحديث ورقة (${questionsSheetName}) بنجاح!`
       };
     }
   } catch (directErr) {
@@ -1353,21 +1599,18 @@ export async function saveFormQuestionsBridge(
         method: "POST",
         mode: "no-cors",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({
-          action: "saveFormQuestions",
-          questions
-        })
+        body: JSON.stringify(payload)
       });
       return {
         success: true,
-        message: "تم إرسال تحديث الأسئلة إلى قوقل شيت وحفظها محلياً بنجاح!"
+        message: `تم إرسال تحديث الأسئلة إلى الورقة (${questionsSheetName}) وتجهيز (${answersSheetName}) بنجاح!`
       };
     } catch (noCorsErr) {}
   }
 
   return {
     success: true,
-    message: "تم حفظ وتحديث الأسئلة في التطبيق والذاكرة المحلية بنجاح!"
+    message: `تم حفظ وتحديث أسئلة الاستبيان (${cleanSurveyId}) في النظام بنجاح!`
   };
 }
 
@@ -1427,14 +1670,57 @@ export function getLocalSubscriberOverrides(): Record<string, Partial<Subscriber
 
 export function saveLocalSubscriberOverride(
   studentId: string,
-  data: Partial<SubscriberRecord> & { deleted?: boolean }
+  data: Partial<SubscriberRecord> & { deleted?: boolean },
+  surveyId: number = 1
 ): void {
   if (typeof window !== "undefined") {
     try {
       const key = normalizeStudentId(studentId);
       if (!key) return;
+      const cleanSurveyId = Math.max(1, Math.floor(Number(surveyId) || 1));
       const current = getLocalSubscriberOverrides();
-      current[key] = { ...(current[key] || {}), ...data };
+      const existing = current[key] || {};
+      const existingSurveys = existing.surveys || {};
+
+      const updatedSurveyResult: SubscriberSurveyResult = {
+        surveyId: cleanSurveyId,
+        totalScore:
+          data.totalScore !== undefined
+            ? data.totalScore
+            : existingSurveys[cleanSurveyId]?.totalScore ?? "",
+        combinedAnswers:
+          data.combinedAnswers !== undefined
+            ? data.combinedAnswers
+            : existingSurveys[cleanSurveyId]?.combinedAnswers ?? "",
+        aiAnalysis:
+          data.aiAnalysis !== undefined
+            ? data.aiAnalysis
+            : existingSurveys[cleanSurveyId]?.aiAnalysis ?? "",
+        hasAnswered:
+          data.hasAnswered !== undefined
+            ? data.hasAnswered
+            : Boolean(existingSurveys[cleanSurveyId]?.hasAnswered)
+      };
+
+      const nextEntry: Partial<SubscriberRecord> & { deleted?: boolean } = {
+        ...existing,
+        studentId: data.studentId || existing.studentId || studentId,
+        studentName: data.studentName || existing.studentName,
+        ...(data.deleted !== undefined ? { deleted: data.deleted } : {}),
+        surveys: {
+          ...existingSurveys,
+          [cleanSurveyId]: updatedSurveyResult
+        }
+      };
+
+      if (cleanSurveyId === 1) {
+        if (data.totalScore !== undefined) nextEntry.totalScore = data.totalScore;
+        if (data.combinedAnswers !== undefined) nextEntry.combinedAnswers = data.combinedAnswers;
+        if (data.aiAnalysis !== undefined) nextEntry.aiAnalysis = data.aiAnalysis;
+        if (data.hasAnswered !== undefined) nextEntry.hasAnswered = data.hasAnswered;
+      }
+
+      current[key] = nextEntry;
       localStorage.setItem(SUBSCRIBERS_OVERRIDES_KEY, JSON.stringify(current));
     } catch (e) {}
   }
@@ -1442,7 +1728,8 @@ export function saveLocalSubscriberOverride(
 
 /**
  * Fetches all rows from the "المشتركين" sheet via GVIZ or Apps Script,
- * merged with local overrides for instant consistency before CDN propagation.
+ * reading 3 columns per survey (Survey 1: D-E-F, Survey 2: G-H-I, Survey N: 4+(N-1)*3...)
+ * and merging with local overrides for instant consistency.
  */
 export async function fetchSubscribersSheetBridge(
   explicitScriptUrl?: string,
@@ -1454,6 +1741,7 @@ export async function fetchSubscribersSheetBridge(
 
   let sheetRecords: SubscriberRecord[] = [];
   let fetchedSuccessfully = false;
+  let maxDiscoveredSurvey = getSurveysList().length;
 
   // Helper to parse GVIZ response for المشتركين sheet
   const parseSubscribersGviz = (text: string): SubscriberRecord[] | null => {
@@ -1464,6 +1752,12 @@ export async function fetchSubscribersSheetBridge(
     if (!json || !json.table || !Array.isArray(json.table.rows)) return null;
 
     const rows = json.table.rows;
+    const colsCount = Array.isArray(json.table.cols) ? json.table.cols.length : 6;
+    const numSurveysInSheet = Math.max(1, Math.floor((colsCount - 3) / 3), getSurveysList().length);
+    if (numSurveysInSheet > maxDiscoveredSurvey) {
+      maxDiscoveredSurvey = numSurveysInSheet;
+    }
+
     const list: SubscriberRecord[] = [];
 
     for (let i = 0; i < rows.length; i++) {
@@ -1478,9 +1772,6 @@ export async function fetchSubscribersSheetBridge(
       const seq = val(0);
       const stuId = val(1);
       const stuName = val(2);
-      const score = val(3);
-      const combinedAns = val(4);
-      const aiAnal = val(5);
 
       // Skip header row if it matches column titles
       const idLow = stuId.toLowerCase();
@@ -1500,20 +1791,50 @@ export async function fetchSubscribersSheetBridge(
 
       if (!stuId && !stuName) continue;
 
-      const hasAnswered = Boolean(
-        (combinedAns && combinedAns !== "-" && combinedAns.length > 0) ||
-          (aiAnal && aiAnal !== "-" && aiAnal.length > 5)
+      const rowMaxSurvey = Math.max(
+        numSurveysInSheet,
+        Math.floor((cells.length - 3) / 3)
       );
+      if (rowMaxSurvey > maxDiscoveredSurvey) {
+        maxDiscoveredSurvey = rowMaxSurvey;
+      }
+
+      const surveysMap: Record<number, SubscriberSurveyResult> = {};
+      for (let s = 1; s <= Math.max(1, rowMaxSurvey); s++) {
+        const sScore = val(3 + (s - 1) * 3);
+        const sAns = val(4 + (s - 1) * 3);
+        const sAi = val(5 + (s - 1) * 3);
+        const sHasAns = Boolean(
+          (sAns && sAns !== "-" && sAns.length > 0) ||
+            (sAi && sAi !== "-" && sAi.length > 5)
+        );
+        surveysMap[s] = {
+          surveyId: s,
+          totalScore: sScore,
+          combinedAnswers: sAns,
+          aiAnalysis: sAi,
+          hasAnswered: sHasAns
+        };
+      }
+
+      const s1 = surveysMap[1] || {
+        surveyId: 1,
+        totalScore: "",
+        combinedAnswers: "",
+        aiAnalysis: "",
+        hasAnswered: false
+      };
 
       list.push({
         rowIndex: i + 1,
         sequence: seq || list.length + 1,
         studentId: stuId,
         studentName: stuName,
-        totalScore: score,
-        combinedAnswers: combinedAns,
-        aiAnalysis: aiAnal,
-        hasAnswered
+        totalScore: s1.totalScore,
+        combinedAnswers: s1.combinedAnswers,
+        aiAnalysis: s1.aiAnalysis,
+        hasAnswered: s1.hasAnswered,
+        surveys: surveysMap
       });
     }
 
@@ -1530,11 +1851,8 @@ export async function fetchSubscribersSheetBridge(
       const res = await fetch(gvizUrl, { cache: "no-store" });
       if (res.ok) {
         const text = await res.text();
-        // Verify that Google didn't silently return RegistrationQuestions or RegistrationAnswers
-        // by checking if row 0 or cols look like RegistrationQuestions
         const parsed = parseSubscribersGviz(text);
         if (parsed && parsed.length > 0) {
-          // Ensure it's not accidentally the RegistrationQuestions sheet (where Col C is question type like "اختيارات")
           const firstRowTypeCheck = String(parsed[0].studentName || "").toLowerCase();
           const looksLikeQuestionsSheet =
             firstRowTypeCheck === "اختيارات" ||
@@ -1560,19 +1878,32 @@ export async function fetchSubscribersSheetBridge(
       if (res.ok) {
         const data = await res.json();
         if (data && Array.isArray(data.subscribers)) {
-          sheetRecords = data.subscribers.map((s: any, idx: number) => ({
-            rowIndex: s.rowIndex || idx + 2,
-            sequence: s.sequence ?? idx + 1,
-            studentId: String(s.studentId || s.id || "").trim(),
-            studentName: String(s.studentName || s.name || "").trim(),
-            totalScore: s.totalScore ?? "",
-            combinedAnswers: s.combinedAnswers || "",
-            aiAnalysis: s.aiAnalysis || "",
-            hasAnswered: Boolean(
+          sheetRecords = data.subscribers.map((s: any, idx: number) => {
+            const s1HasAns = Boolean(
               (s.combinedAnswers && String(s.combinedAnswers).trim() !== "") ||
                 (s.aiAnalysis && String(s.aiAnalysis).trim() !== "")
-            )
-          }));
+            );
+            const surveysMap: Record<number, SubscriberSurveyResult> = s.surveys || {
+              1: {
+                surveyId: 1,
+                totalScore: s.totalScore ?? "",
+                combinedAnswers: s.combinedAnswers || "",
+                aiAnalysis: s.aiAnalysis || "",
+                hasAnswered: s1HasAns
+              }
+            };
+            return {
+              rowIndex: s.rowIndex || idx + 2,
+              sequence: s.sequence ?? idx + 1,
+              studentId: String(s.studentId || s.id || "").trim(),
+              studentName: String(s.studentName || s.name || "").trim(),
+              totalScore: s.totalScore ?? "",
+              combinedAnswers: s.combinedAnswers || "",
+              aiAnalysis: s.aiAnalysis || "",
+              hasAnswered: s1HasAns,
+              surveys: surveysMap
+            };
+          });
           fetchedSuccessfully = true;
         }
       }
@@ -1592,7 +1923,13 @@ export async function fetchSubscribersSheetBridge(
     } catch (e) {}
   }
 
-  // Merge with local overrides (for newly submitted answers, reset answers, or newly added subscribers)
+  if (maxDiscoveredSurvey > 1) {
+    ensureSurveysUpTo(maxDiscoveredSurvey);
+  }
+
+  const allSurveyIds = getSurveysList().map((s) => s.id);
+
+  // Merge with local overrides (for newly submitted answers, reset answers, or newly added subscribers across any survey)
   const overrides = getLocalSubscriberOverrides();
   const mergedMap = new Map<string, SubscriberRecord>();
 
@@ -1601,40 +1938,131 @@ export async function fetchSubscribersSheetBridge(
     if (!key) return;
     const ov = overrides[key];
     if (ov?.deleted) return;
-    if (ov) {
-      const combinedAnswers = ov.combinedAnswers !== undefined ? ov.combinedAnswers : rec.combinedAnswers;
-      const totalScore = ov.totalScore !== undefined ? ov.totalScore : rec.totalScore;
-      const aiAnalysis = ov.aiAnalysis !== undefined ? ov.aiAnalysis : rec.aiAnalysis;
-      const hasAnswered =
-        ov.hasAnswered !== undefined
-          ? ov.hasAnswered
-          : Boolean(combinedAnswers && String(combinedAnswers).trim() !== "");
-      mergedMap.set(key, {
-        ...rec,
-        studentName: ov.studentName || rec.studentName,
-        totalScore,
-        combinedAnswers,
-        aiAnalysis,
-        hasAnswered
-      });
-    } else {
-      mergedMap.set(key, rec);
+
+    const mergedSurveys: Record<number, SubscriberSurveyResult> = {
+      ...(rec.surveys || {})
+    };
+
+    // Ensure survey 1 is in mergedSurveys
+    if (!mergedSurveys[1]) {
+      mergedSurveys[1] = {
+        surveyId: 1,
+        totalScore: rec.totalScore ?? "",
+        combinedAnswers: rec.combinedAnswers ?? "",
+        aiAnalysis: rec.aiAnalysis ?? "",
+        hasAnswered: rec.hasAnswered
+      };
     }
+
+    if (ov) {
+      // Apply legacy top-level override to survey 1 if present
+      if (
+        ov.combinedAnswers !== undefined ||
+        ov.totalScore !== undefined ||
+        ov.aiAnalysis !== undefined ||
+        ov.hasAnswered !== undefined
+      ) {
+        const cAns = ov.combinedAnswers !== undefined ? ov.combinedAnswers : mergedSurveys[1].combinedAnswers;
+        const tScore = ov.totalScore !== undefined ? ov.totalScore : mergedSurveys[1].totalScore;
+        const aAnal = ov.aiAnalysis !== undefined ? ov.aiAnalysis : mergedSurveys[1].aiAnalysis;
+        const hAns =
+          ov.hasAnswered !== undefined
+            ? ov.hasAnswered
+            : Boolean(cAns && String(cAns).trim() !== "");
+        mergedSurveys[1] = {
+          surveyId: 1,
+          totalScore: tScore,
+          combinedAnswers: cAns,
+          aiAnalysis: aAnal,
+          hasAnswered: hAns
+        };
+      }
+
+      // Apply per-survey overrides
+      if (ov.surveys) {
+        Object.entries(ov.surveys).forEach(([sIdStr, sOv]) => {
+          const sId = Number(sIdStr);
+          if (!sId || !sOv) return;
+          const baseS = mergedSurveys[sId] || {
+            surveyId: sId,
+            totalScore: "",
+            combinedAnswers: "",
+            aiAnalysis: "",
+            hasAnswered: false
+          };
+          const cAns = sOv.combinedAnswers !== undefined ? sOv.combinedAnswers : baseS.combinedAnswers;
+          const tScore = sOv.totalScore !== undefined ? sOv.totalScore : baseS.totalScore;
+          const aAnal = sOv.aiAnalysis !== undefined ? sOv.aiAnalysis : baseS.aiAnalysis;
+          const hAns =
+            sOv.hasAnswered !== undefined
+              ? sOv.hasAnswered
+              : Boolean(cAns && String(cAns).trim() !== "");
+          mergedSurveys[sId] = {
+            surveyId: sId,
+            totalScore: tScore,
+            combinedAnswers: cAns,
+            aiAnalysis: aAnal,
+            hasAnswered: hAns
+          };
+        });
+      }
+    }
+
+    // Ensure all configured surveys have an entry in mergedSurveys
+    allSurveyIds.forEach((sId) => {
+      if (!mergedSurveys[sId]) {
+        mergedSurveys[sId] = {
+          surveyId: sId,
+          totalScore: "",
+          combinedAnswers: "",
+          aiAnalysis: "",
+          hasAnswered: false
+        };
+      }
+    });
+
+    const s1Final = mergedSurveys[1];
+
+    mergedMap.set(key, {
+      ...rec,
+      studentName: ov?.studentName || rec.studentName,
+      totalScore: s1Final.totalScore,
+      combinedAnswers: s1Final.combinedAnswers,
+      aiAnalysis: s1Final.aiAnalysis,
+      hasAnswered: s1Final.hasAnswered,
+      surveys: mergedSurveys
+    });
   });
 
   // Also include any subscribers added locally by the admin that aren't in GVIZ yet
   Object.entries(overrides).forEach(([key, ov]) => {
     if (ov.deleted || mergedMap.has(key)) return;
     if (ov.studentId && ov.studentName) {
+      const mergedSurveys: Record<number, SubscriberSurveyResult> = {
+        ...(ov.surveys || {})
+      };
+      allSurveyIds.forEach((sId) => {
+        if (!mergedSurveys[sId]) {
+          mergedSurveys[sId] = {
+            surveyId: sId,
+            totalScore: sId === 1 ? (ov.totalScore ?? "") : "",
+            combinedAnswers: sId === 1 ? (ov.combinedAnswers ?? "") : "",
+            aiAnalysis: sId === 1 ? (ov.aiAnalysis ?? "") : "",
+            hasAnswered: sId === 1 ? Boolean(ov.hasAnswered) : false
+          };
+        }
+      });
+      const s1Final = mergedSurveys[1];
       mergedMap.set(key, {
         rowIndex: mergedMap.size + 2,
         sequence: ov.sequence || mergedMap.size + 1,
         studentId: ov.studentId,
         studentName: ov.studentName,
-        totalScore: ov.totalScore ?? "",
-        combinedAnswers: ov.combinedAnswers ?? "",
-        aiAnalysis: ov.aiAnalysis ?? "",
-        hasAnswered: Boolean(ov.hasAnswered)
+        totalScore: s1Final.totalScore,
+        combinedAnswers: s1Final.combinedAnswers,
+        aiAnalysis: s1Final.aiAnalysis,
+        hasAnswered: s1Final.hasAnswered,
+        surveys: mergedSurveys
       });
     }
   });
@@ -1650,29 +2078,28 @@ export async function fetchSubscribersSheetBridge(
 }
 
 /**
- * Verifies Subscriber ID and Name against the "المشتركين" sheet.
- * Enforces:
- * 1. Both Student ID and Student Name must match a registered row in "المشتركين".
- * 2. If the student already answered (and preventDuplicateSubmission is enabled), blocks re-answering.
+ * Verifies Subscriber ID and Name against the "المشتركين" sheet for a specific Survey (surveyId = 1, 2, 3...).
  */
 export async function verifySubscriberInSheetBridge(
   studentId: string,
   studentName: string,
   explicitScriptUrl?: string,
-  explicitSpreadsheetId?: string
+  explicitSpreadsheetId?: string,
+  surveyId: number = 1
 ): Promise<{
   valid: boolean;
   status: "ok" | "already_answered" | "invalid_name" | "not_found" | "form_closed";
   message: string;
   subscriber?: SubscriberRecord;
 }> {
-  const analysisSettings = getAnalysisSettings();
+  const cleanSurveyId = Math.max(1, Math.floor(Number(surveyId) || 1));
+  const analysisSettings = getAnalysisSettings(cleanSurveyId);
 
   if (analysisSettings.isFormClosed) {
     return {
       valid: false,
       status: "form_closed",
-      message: "الاستبيان مغلق حالياً من قِبل الإدارة ولا يستقبل إجابات جديدة."
+      message: "هذا الاستبيان مغلق حالياً من قِبل الإدارة ولا يستقبل إجابات جديدة."
     };
   }
 
@@ -1694,7 +2121,6 @@ export async function verifySubscriberInSheetBridge(
 
   if (matchedById) {
     const registeredNameNorm = normalizeStudentName(matchedById.studentName);
-    // Check if the entered name matches the registered name (exact normalized match or contains full first+second name)
     const isNameMatch =
       registeredNameNorm === cleanName ||
       (cleanName.length >= 3 &&
@@ -1711,13 +2137,19 @@ export async function verifySubscriberInSheetBridge(
       };
     }
 
-    // Check if student already answered
-    if (analysisSettings.preventDuplicateSubmission && matchedById.hasAnswered) {
+    // Check if student already answered THIS specific survey (surveyId)
+    const surveyResult = matchedById.surveys?.[cleanSurveyId];
+    const hasAnsweredThisSurvey =
+      cleanSurveyId === 1
+        ? Boolean(surveyResult ? surveyResult.hasAnswered : matchedById.hasAnswered)
+        : Boolean(surveyResult?.hasAnswered);
+
+    if (analysisSettings.preventDuplicateSubmission && hasAnsweredThisSurvey) {
       return {
         valid: false,
         status: "already_answered",
         subscriber: matchedById,
-        message: "لقد قمت بالإجابة على هذا الاستبيان مسبقاً وتم تسجيل نتيجتك. لا يُسمح بالإجابة مرة أخرى."
+        message: `لقد قمت بالإجابة على (الاستبيان ${cleanSurveyId}) مسبقاً وتم تسجيل نتيجتك. لا يُسمح بالإجابة مرة أخرى.`
       };
     }
 
@@ -1739,7 +2171,6 @@ export async function verifySubscriberInSheetBridge(
     };
   }
 
-  // If strict login was manually disabled by admin in settings, allow entry
   return {
     valid: true,
     status: "ok",
@@ -1755,7 +2186,8 @@ export async function verifySubscriberInSheetBridge(
 }
 
 /**
- * Updates a subscriber's row in the "المشتركين" sheet (Score, Combined Answers, AI Analysis, or Reset)
+ * Updates a subscriber's row in the "المشتركين" sheet for a specific surveyId
+ * (Survey 1 -> Cols D,E,F | Survey 2 -> Cols G,H,I | Survey N -> Cols 4+(N-1)*3...)
  */
 export async function updateSubscriberRowBridge(
   studentId: string,
@@ -1766,20 +2198,27 @@ export async function updateSubscriberRowBridge(
     aiAnalysis?: string;
     hasAnswered?: boolean;
   },
-  explicitScriptUrl?: string
+  explicitScriptUrl?: string,
+  surveyId: number = 1
 ): Promise<{ success: boolean; message: string }> {
   const targetScriptUrl = explicitScriptUrl || getActiveScriptUrl();
+  const cleanSurveyId = Math.max(1, Math.floor(Number(surveyId) || 1));
 
-  // 1. Save immediately in local override
-  saveLocalSubscriberOverride(studentId, {
+  // 1. Save immediately in local override for this surveyId
+  saveLocalSubscriberOverride(
     studentId,
-    studentName,
-    ...updates
-  });
+    {
+      studentId,
+      studentName,
+      ...updates
+    },
+    cleanSurveyId
+  );
 
   const payload = {
     action: "updateSubscriberRow",
     targetSheet: "المشتركين",
+    surveyId: cleanSurveyId,
     registrationId: studentId,
     studentId,
     studentName,
@@ -1802,7 +2241,7 @@ export async function updateSubscriberRowBridge(
     if (res.ok) {
       return {
         success: true,
-        message: "تم تحديث صف المشترك في ورقة (المشتركين) بنجاح!"
+        message: `تم تحديث بيانات (الاستبيان ${cleanSurveyId}) للمشترك في ورقة (المشتركين) بنجاح!`
       };
     }
   } catch (e) {}
@@ -1819,7 +2258,7 @@ export async function updateSubscriberRowBridge(
 
   return {
     success: true,
-    message: "تم حفظ التحديث في سجل المشتركين بنجاح!"
+    message: `تم حفظ تحديث (الاستبيان ${cleanSurveyId}) في سجل المشتركين بنجاح!`
   };
 }
 

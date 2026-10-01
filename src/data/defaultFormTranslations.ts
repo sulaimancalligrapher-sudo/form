@@ -15,6 +15,14 @@ export const DEFAULT_OPTION_TRANSLATIONS: Record<string, { en: string; th: strin
   "خيار 2": { en: "Option 2", th: "ตัวเลือกที่ 2" },
   "لا أعرف بعد": { en: "I don't know yet", th: "ยังไม่แน่ใจ" },
   "غير ذلك": { en: "Other", th: "อื่นๆ" },
+  "استفادة ممتازة وتقدم واضح": { en: "Excellent benefit and clear progress", th: "ได้รับประโยชน์อย่างยอดเยี่ยมและมีความก้าวหน้าชัดเจน" },
+  "استفادة جيدة جداً": { en: "Very good benefit", th: "ได้รับประโยชน์ดีมาก" },
+  "استفادة متوسطة": { en: "Moderate benefit", th: "ได้รับประโยชน์ปานกลาง" },
+  "أحتاج لمزيد من التدريب": { en: "I need more practice", th: "ฉันต้องการการฝึกฝนเพิ่มเติม" },
+  "التزام يومي كامل ودقيق": { en: "Full and accurate daily commitment", th: "มีความมุ่งมั่นและฝึกฝนทุกวันอย่างครบถ้วน" },
+  "التزام غالبية الأيام": { en: "Committed on most days", th: "ฝึกฝนเป็นส่วนใหญ่" },
+  "التزام متقطع": { en: "Intermittent commitment", th: "ฝึกฝนเป็นบางครั้ง" },
+  "واجهت صعوبة في الالتزام": { en: "I faced difficulty staying committed", th: "ประสบปัญหาในการฝึกฝนอย่างต่อเนื่อง" },
 
   // Q3: هل سبق لك تعلم الخط العربي؟
   "لم أتعلمه من قبل": { en: "I have never learned it before", th: "ไม่เคยเรียนมาก่อน" },
@@ -917,5 +925,45 @@ export const DEFAULT_FORM_TRANSLATIONS: Record<string, QuestionTranslation> = {
     descriptionTh: "กรุณาถ่ายภาพหรือแนบรูปภาพตัวอย่างการเขียนของคุณ",
     optionsEn: ["Option 1", "Option 2"],
     optionsTh: ["ตัวเลือกที่ 1", "ตัวเลือกที่ 2"]
+  },
+  "1. كيف تقيّم مدى استفادتك وتقدمك في هذه المرحلة التدريبية؟": {
+    questionEn: "1. How do you rate your benefit and progress in this training stage?",
+    questionTh: "1. คุณประเมินประโยชน์และความก้าวหน้าของคุณในขั้นตอนการฝึกอบรมนี้อย่างไร?",
+    optionsEn: [
+      "Excellent benefit and clear progress",
+      "Very good benefit",
+      "Moderate benefit",
+      "I need more practice"
+    ],
+    optionsTh: [
+      "ได้รับประโยชน์อย่างยอดเยี่ยมและมีความก้าวหน้าชัดเจน",
+      "ได้รับประโยชน์ดีมาก",
+      "ได้รับประโยชน์ปานกลาง",
+      "ฉันต้องการการฝึกฝนเพิ่มเติม"
+    ]
+  },
+  "2. ما مدى التزامك بالتدريب اليومي وتطبيق ملاحظات المعلم؟": {
+    questionEn: "2. How committed were you to daily practice and applying the teacher's feedback?",
+    questionTh: "2. คุณมีความมุ่งมั่นในการฝึกฝนประจำวันและนำคำแนะนำของครูไปใช้มากน้อยเพียงใด?",
+    optionsEn: [
+      "Full and accurate daily commitment",
+      "Committed on most days",
+      "Intermittent commitment",
+      "I faced difficulty staying committed"
+    ],
+    optionsTh: [
+      "มีความมุ่งมั่นและฝึกฝนทุกวันอย่างครบถ้วน",
+      "ฝึกฝนเป็นส่วนใหญ่",
+      "ฝึกฝนเป็นบางครั้ง",
+      "ประสบปัญหาในการฝึกฝนอย่างต่อเนื่อง"
+    ]
+  },
+  "3. ما هي أبرز المهارات أو الحروف التي شعرت بتحسن واضح فيها؟": {
+    questionEn: "3. What are the main skills or letters where you felt a clear improvement?",
+    questionTh: "3. ทักษะหรือตัวอักษรใดที่คุณรู้สึกว่าพัฒนาขึ้นอย่างชัดเจน?"
+  },
+  "4. هل لديك أي صعوبات أو ملاحظات تود مشاركتها مع المعلم والإدارة؟": {
+    questionEn: "4. Do you have any difficulties or notes you would like to share with the teacher and administration?",
+    questionTh: "4. คุณมีปัญหาหรือข้อเสนอแนะใดๆ ที่ต้องการแบ่งปันกับครูและฝ่ายบริหารหรือไม่?"
   }
 };

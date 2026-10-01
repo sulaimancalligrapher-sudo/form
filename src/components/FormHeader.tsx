@@ -7,11 +7,9 @@ import {
   Settings,
   Share2,
   Check,
-  Globe,
-  Sparkles,
-  ExternalLink,
   RefreshCw,
-  ShieldCheck
+  ShieldCheck,
+  LogOut
 } from "lucide-react";
 
 interface FormHeaderProps {
@@ -22,6 +20,8 @@ interface FormHeaderProps {
   onRefreshQuestions?: () => void;
   isRefreshing?: boolean;
   spreadsheetId: string;
+  isAdminAuthenticated?: boolean;
+  onAdminLogout?: () => void;
 }
 
 export const FormHeader: React.FC<FormHeaderProps> = ({
@@ -31,7 +31,8 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
   onOpenAdmin,
   onRefreshQuestions,
   isRefreshing,
-  spreadsheetId
+  isAdminAuthenticated = false,
+  onAdminLogout
 }) => {
   const [copied, setCopied] = React.useState(false);
   const rawLogoUrl = getHeaderLogoUrl();
@@ -58,7 +59,9 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
 
   const handleShare = async () => {
     if (typeof window === "undefined") return;
-    const currentUrl = window.location.href;
+    // Always share the clean public registration form URL (without /admin or ?admin)
+    const cleanPath = window.location.pathname.replace(/\/admin\/?$/i, "") || "/";
+    const publicUrl = `${window.location.origin}${cleanPath}`;
 
     // Use Web Share API if available on mobile/tablet devices
     if (navigator.share) {
@@ -66,13 +69,12 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
         await navigator.share({
           title: headerTitle,
           text: headerSubtitle,
-          url: currentUrl
+          url: publicUrl
         });
         setCopied(true);
         setTimeout(() => setCopied(false), 2500);
         return;
       } catch (err: any) {
-        // If user cancelled share sheet, do nothing
         if (err.name === "AbortError") return;
       }
     }
@@ -80,10 +82,10 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
     // Fallback: clipboard write or prompt
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(currentUrl);
+        await navigator.clipboard.writeText(publicUrl);
       } else {
         const textArea = document.createElement("textarea");
-        textArea.value = currentUrl;
+        textArea.value = publicUrl;
         textArea.style.position = "fixed";
         textArea.style.left = "-9999px";
         document.body.appendChild(textArea);
@@ -95,12 +97,24 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
     } catch {
-      window.prompt("انسخ الرابط التالي لمشاركته:", currentUrl);
+      window.prompt("انسخ الرابط التالي لمشاركته:", publicUrl);
     }
   };
 
-  const headerTitle = t.headerTitle || (currentLang === "ar" ? "مركز يوسف ذنون لتعليم الخط العربي أون لاين" : currentLang === "en" ? "Yusuf Thnun Center for Arabic Calligraphy" : "ศูนย์การเรียนรู้การเขียนอักษรวิจิตร ยูซุฟ ซันนูน");
-  const headerSubtitle = t.headerSubtitle || (currentLang === "ar" ? "المنصة الرسمية للتسجيل ومتابعة البرامج التعليمية" : currentLang === "en" ? "Official Registration & Course Enrollment Platform" : "แพลตฟอร์มอย่างเป็นทางการสำหรับการลงทะเบียนเรียน");
+  const headerTitle =
+    t.headerTitle ||
+    (currentLang === "ar"
+      ? "مركز يوسف ذنون لتعليم الخط العربي أون لاين"
+      : currentLang === "en"
+      ? "Yusuf Thnun Center for Arabic Calligraphy"
+      : "ศูนย์การเรียนรู้การเขียนอักษรวิจิตร ยูซุฟ ซันนูน");
+  const headerSubtitle =
+    t.headerSubtitle ||
+    (currentLang === "ar"
+      ? "المنصة الرسمية للتسجيل ومتابعة البرامج التعليمية"
+      : currentLang === "en"
+      ? "Official Registration & Course Enrollment Platform"
+      : "แพลตฟอร์มอย่างเป็นทางการสำหรับการลงทะเบียนเรียน");
 
   return (
     <header className="w-full bg-white border-b border-slate-200 sticky top-0 z-30 shadow-xs">
@@ -130,14 +144,14 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
           </div>
         </div>
 
-        {/* Right Actions: Lang Switcher, Share, Settings */}
-        <div className="flex items-center gap-2">
+        {/* Right Actions: Lang Switcher, Icon-Only Refresh, and Admin Controls (when authenticated) */}
+        <div className="flex items-center gap-2 flex-wrap">
           {/* Language Selector */}
           <div className="relative flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-xs font-medium">
             <button
               type="button"
               onClick={() => onLanguageChange("ar")}
-              className={`px-2.5 py-1 rounded-md transition-all ${
+              className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
                 currentLang === "ar"
                   ? "bg-white text-slate-900 shadow-xs font-bold"
                   : "text-slate-600 hover:text-slate-900"
@@ -148,7 +162,7 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
             <button
               type="button"
               onClick={() => onLanguageChange("en")}
-              className={`px-2.5 py-1 rounded-md transition-all ${
+              className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
                 currentLang === "en"
                   ? "bg-white text-slate-900 shadow-xs font-bold"
                   : "text-slate-600 hover:text-slate-900"
@@ -159,7 +173,7 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
             <button
               type="button"
               onClick={() => onLanguageChange("th")}
-              className={`px-2.5 py-1 rounded-md transition-all ${
+              className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
                 currentLang === "th"
                   ? "bg-white text-slate-900 shadow-xs font-bold"
                   : "text-slate-600 hover:text-slate-900"
@@ -169,63 +183,83 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
             </button>
           </div>
 
-          {/* Share Button */}
-          <button
-            type="button"
-            onClick={handleShare}
-            title={t.shareLink}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition-colors"
-          >
-            {copied ? (
-              <>
-                <Check className="w-3.5 h-3.5 text-emerald-600" />
-                <span className="text-emerald-700 font-semibold">{t.linkCopied}</span>
-              </>
-            ) : (
-              <>
-                <Share2 className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">{t.shareLink}</span>
-              </>
-            )}
-          </button>
-
-          {/* Refresh Questions Button */}
+          {/* Refresh Questions Button (Icon ONLY - no text) */}
           {onRefreshQuestions && (
             <button
               type="button"
               onClick={onRefreshQuestions}
               disabled={isRefreshing}
               title="تحديث الأسئلة فورياً من قوقل شيت"
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-colors shadow-xs disabled:opacity-50"
+              aria-label="تحديث الأسئلة"
+              className="p-2 rounded-lg text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-colors shadow-xs disabled:opacity-50 flex items-center justify-center cursor-pointer"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin text-emerald-600" : "text-emerald-600"}`} />
-              <span className="hidden sm:inline">
-                {isRefreshing ? "جاري التحديث..." : "تحديث الأسئلة"}
-              </span>
+              <RefreshCw
+                className={`w-4 h-4 ${
+                  isRefreshing ? "animate-spin text-emerald-600" : "text-emerald-600"
+                }`}
+              />
             </button>
           )}
 
-          {/* Settings Button */}
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition-colors shadow-xs"
-          >
-            <Settings className="w-3.5 h-3.5 text-slate-600" />
-            <span>{t.sheetSettings}</span>
-          </button>
+          {/* Private Admin Controls: Only visible after successful Admin Login */}
+          {isAdminAuthenticated && (
+            <>
+              {/* Share Link Button */}
+              <button
+                type="button"
+                onClick={handleShare}
+                title={t.shareLink}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition-colors cursor-pointer"
+              >
+                {copied ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                    <span className="text-emerald-700 font-semibold">{t.linkCopied}</span>
+                  </>
+                ) : (
+                  <>
+                    <Share2 className="w-3.5 h-3.5" />
+                    <span>{t.shareLink}</span>
+                  </>
+                )}
+              </button>
 
-          {/* Admin Dashboard Button */}
-          {onOpenAdmin && (
-            <button
-              type="button"
-              onClick={onOpenAdmin}
-              title="لوحة تحكم الإدارة واستعراض الإجابات والنتائج"
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg text-white bg-slate-900 hover:bg-slate-800 transition-colors shadow-xs"
-            >
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="hidden sm:inline">لوحة الإدارة</span>
-            </button>
+              {/* Settings Button */}
+              <button
+                type="button"
+                onClick={onOpenSettings}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition-colors shadow-xs cursor-pointer"
+              >
+                <Settings className="w-3.5 h-3.5 text-slate-600" />
+                <span>{t.sheetSettings}</span>
+              </button>
+
+              {/* Admin Dashboard Button */}
+              {onOpenAdmin && (
+                <button
+                  type="button"
+                  onClick={onOpenAdmin}
+                  title="لوحة تحكم الإدارة واستعراض الإجابات والنتائج"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg text-white bg-slate-900 hover:bg-slate-800 transition-colors shadow-xs cursor-pointer"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>لوحة الإدارة</span>
+                </button>
+              )}
+
+              {/* Logout from Settings/Admin (Icon ONLY without text) */}
+              {onAdminLogout && (
+                <button
+                  type="button"
+                  onClick={onAdminLogout}
+                  title="تسجيل الخروج من وضع الإدارة وإخفاء الإعدادات"
+                  aria-label="خروج من الإعدادات"
+                  className="p-2 rounded-lg text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-colors shadow-xs flex items-center justify-center cursor-pointer"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>

@@ -38,10 +38,18 @@ export const DEFAULT_ANALYSIS_SETTINGS: AnalysisSettings = {
   isFormClosed: false
 };
 
-export function getAnalysisSettings(): AnalysisSettings {
+function getStorageKeyForSurvey(surveyId: number = 1): string {
+  const cleanId = Math.max(1, Math.floor(Number(surveyId) || 1));
+  return cleanId === 1
+    ? ANALYSIS_SETTINGS_STORAGE_KEY
+    : `${ANALYSIS_SETTINGS_STORAGE_KEY}_s${cleanId}`;
+}
+
+export function getAnalysisSettings(surveyId: number = 1): AnalysisSettings {
   if (typeof window !== "undefined") {
     try {
-      const raw = localStorage.getItem(ANALYSIS_SETTINGS_STORAGE_KEY);
+      const key = getStorageKeyForSurvey(surveyId);
+      const raw = localStorage.getItem(key) || (surveyId > 1 ? localStorage.getItem(ANALYSIS_SETTINGS_STORAGE_KEY) : null);
       if (raw) {
         const parsed = JSON.parse(raw);
         return {
@@ -60,20 +68,22 @@ export function getAnalysisSettings(): AnalysisSettings {
   return DEFAULT_ANALYSIS_SETTINGS;
 }
 
-export function saveAnalysisSettings(settings: AnalysisSettings): void {
+export function saveAnalysisSettings(settings: AnalysisSettings, surveyId: number = 1): void {
   if (typeof window !== "undefined") {
     try {
-      localStorage.setItem(ANALYSIS_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+      const key = getStorageKeyForSurvey(surveyId);
+      localStorage.setItem(key, JSON.stringify(settings));
     } catch (e) {
       console.warn("Failed to save analysis settings:", e);
     }
   }
 }
 
-export function resetAnalysisSettings(): AnalysisSettings {
+export function resetAnalysisSettings(surveyId: number = 1): AnalysisSettings {
   if (typeof window !== "undefined") {
     try {
-      localStorage.removeItem(ANALYSIS_SETTINGS_STORAGE_KEY);
+      const key = getStorageKeyForSurvey(surveyId);
+      localStorage.removeItem(key);
     } catch (e) {}
   }
   return DEFAULT_ANALYSIS_SETTINGS;

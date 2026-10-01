@@ -38,6 +38,8 @@ import {
   RotateCcw
 } from "lucide-react";
 import { testSheetConnection } from "../utils/googleBackendBridge";
+import { getAdminPassword, setAdminPassword } from "./AdminLoginModal";
+import { Lock, KeyRound } from "lucide-react";
 
 interface SheetSettingsModalProps {
   isOpen: boolean;
@@ -109,6 +111,8 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
   }>({ tested: false });
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{ success: boolean; message: string; headers?: string[] } | null>(null);
+  const [adminPasswordInput, setAdminPasswordInput] = useState(() => getAdminPassword());
+  const [copiedUrlType, setCopiedUrlType] = useState<"public" | "admin" | null>(null);
 
   // Keep state in sync with updated props
   useEffect(() => {
@@ -124,6 +128,7 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
       setHeaderSubtitleAr(ui.ar.headerSubtitle || UI_TRANSLATIONS.ar.headerSubtitle || "المنصة الرسمية للتسجيل ومتابعة البرامج التعليمية");
       setFormTitleAr(ui.ar.formTitle || UI_TRANSLATIONS.ar.formTitle);
       setFormSubtitleAr(ui.ar.formSubtitle || UI_TRANSLATIONS.ar.formSubtitle);
+      setAdminPasswordInput(getAdminPassword());
     }
   }, [isOpen, initialSpreadsheetId, initialScriptUrl, initialDriveFolderId, initialTelegramConfig]);
 
@@ -167,6 +172,11 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
   const handleSaveAndClose = () => {
     // 1. Save Header Logo
     saveHeaderLogoUrl(logoUrl);
+
+    // 1b. Save Admin Password
+    if (adminPasswordInput.trim()) {
+      setAdminPassword(adminPasswordInput.trim());
+    }
 
     // 2. Save Decoupled Header Branding and Hero Card in Arabic
     const currentUi = getCustomUiTranslations();
@@ -466,6 +476,87 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
                     <span>فتح تبويب الترجمات والنصوص</span>
                     <Globe className="w-3 h-3" />
                   </button>
+                </div>
+              </div>
+
+              {/* SECTION 3: Private Admin Portal Link & Password */}
+              <div className="bg-slate-900 text-white rounded-2xl p-4.5 space-y-3.5 shadow-sm border border-slate-800">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <Lock className="w-4 h-4 text-emerald-400" />
+                    <h4 className="font-bold text-white text-xs sm:text-sm">
+                      3. الرابط الخاص بالإدارة ورمز الدخول (Private Admin Portal)
+                    </h4>
+                  </div>
+                  <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold px-2 py-0.5 rounded-full">
+                    خاص بالإدارة
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div className="bg-slate-800/80 border border-slate-700 rounded-xl p-3 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-slate-200">الرابط العام للمشتركين:</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const url = typeof window !== "undefined"
+                            ? `${window.location.origin}${window.location.pathname.replace(/\/admin\/?$/i, "") || "/"}`
+                            : "/";
+                          navigator.clipboard.writeText(url);
+                          setCopiedUrlType("public");
+                          setTimeout(() => setCopiedUrlType(null), 2500);
+                        }}
+                        className="text-[11px] font-bold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 cursor-pointer"
+                      >
+                        {copiedUrlType === "public" ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedUrlType === "public" ? "تم النسخ!" : "نسخ الرابط"}</span>
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      تظهر فيه الاستمارة فقط (بدون أزرار الإدارة أو الإعدادات).
+                    </p>
+                  </div>
+
+                  <div className="bg-slate-800/80 border border-emerald-500/40 rounded-xl p-3 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-emerald-300">الرابط الخاص للإدارة (`/admin`):</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const base = typeof window !== "undefined"
+                            ? `${window.location.origin}${window.location.pathname.replace(/\/admin\/?$/i, "").replace(/\/$/, "")}`
+                            : "";
+                          const url = `${base}/admin`;
+                          navigator.clipboard.writeText(url);
+                          setCopiedUrlType("admin");
+                          setTimeout(() => setCopiedUrlType(null), 2500);
+                        }}
+                        className="text-[11px] font-bold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 cursor-pointer"
+                      >
+                        {copiedUrlType === "admin" ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedUrlType === "admin" ? "تم النسخ!" : "نسخ رابط الإدارة"}</span>
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      يفتح نافذة تسجيل دخول الإدارة ويُظهر أزرار الإعدادات ولوحة الإدارة ومشاركة الرابط.
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-200 mb-1 flex items-center gap-1.5">
+                    <KeyRound className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>رمز مرور دخول الإدارة (Admin Password):</span>
+                  </label>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    value={adminPasswordInput}
+                    onChange={(e) => setAdminPasswordInput(e.target.value)}
+                    placeholder="1234"
+                    className="w-full px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-xs font-mono font-bold text-white outline-none focus:border-emerald-500"
+                  />
                 </div>
               </div>
               {/* Spreadsheet ID */}

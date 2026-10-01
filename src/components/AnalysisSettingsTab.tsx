@@ -21,23 +21,25 @@ import {
 interface AnalysisSettingsTabProps {
   onSettingsUpdated?: (settings: AnalysisSettings) => void;
   darkMode?: boolean;
+  surveyId?: number;
 }
 
 export const AnalysisSettingsTab: React.FC<AnalysisSettingsTabProps> = ({
   onSettingsUpdated,
-  darkMode = false
+  darkMode = false,
+  surveyId = 1
 }) => {
-  const [settings, setSettings] = useState<AnalysisSettings>(() => getAnalysisSettings());
+  const [settings, setSettings] = useState<AnalysisSettings>(() => getAnalysisSettings(surveyId));
   const [newCriterion, setNewCriterion] = useState("");
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    setSettings(getAnalysisSettings());
-  }, []);
+    setSettings(getAnalysisSettings(surveyId));
+  }, [surveyId]);
 
   const persist = (updated: AnalysisSettings, message = "تم حفظ إعدادات التحليل وبوابة المشتركين تلقائياً!") => {
     setSettings(updated);
-    saveAnalysisSettings(updated);
+    saveAnalysisSettings(updated, surveyId);
     if (onSettingsUpdated) {
       onSettingsUpdated(updated);
     }
@@ -69,12 +71,12 @@ export const AnalysisSettingsTab: React.FC<AnalysisSettingsTabProps> = ({
     next[index] = val;
     const updated = { ...settings, criteria: next };
     setSettings(updated);
-    saveAnalysisSettings(updated);
+    saveAnalysisSettings(updated, surveyId);
     if (onSettingsUpdated) onSettingsUpdated(updated);
   };
 
   const handleReset = () => {
-    const defaults = resetAnalysisSettings();
+    const defaults = resetAnalysisSettings(surveyId);
     setSettings(defaults);
     if (onSettingsUpdated) onSettingsUpdated(defaults);
     setSavedNotice("تمت استعادة معطيات التحليل الـ 11 والإعدادات الافتراضية بنجاح!");

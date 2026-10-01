@@ -1,7 +1,7 @@
 import { RegistrationQuestion, TelegramConfig, FormLang } from "../types";
 
 export const DEFAULT_SPREADSHEET_ID = "1vci0f5bqip2svJAsa8Rgq4mwGtHjCqVhjNBPGJa96ig";
-export const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx3-duYx-5g0buu6x__f6lpyjurPwMFo4MvcOaqVzjP9zKcDJuLh20EubXVHYyz3X84/exec";
+export const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxgGU-7cYtdqFAiP2Wg0sLce6VEaZ1wS_Y40bPmYXurw7NnABhkQ17cey8KtGxblypx/exec";
 export const DEFAULT_DRIVE_FOLDER_ID = "1tae6n3-tjB9vVtxr2GbK572SRtWxZ3f7";
 
 export const DEFAULT_TELEGRAM_CONFIG: TelegramConfig = {

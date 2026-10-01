@@ -67,6 +67,23 @@ export interface SubscriberEmailConfig {
   telegramBotLink?: string;
 }
 
+export interface SurveyDefinition {
+  id: number;                   // 1, 2, 3, 4...
+  title: string;                // e.g., "الاستبيان 1"
+  subtitle?: string;            // وصف الاستبيان أو المرحلة
+  questionsSheetName: string;   // "RegistrationQuestions" for id=1, "RegistrationQuestions_2" for id=2...
+  answersSheetName: string;     // "RegistrationAnswers" for id=1, "RegistrationAnswers_2" for id=2...
+  createdAt?: string;
+}
+
+export interface SubscriberSurveyResult {
+  surveyId: number;
+  totalScore?: string | number;
+  combinedAnswers?: string;
+  aiAnalysis?: string;
+  hasAnswered: boolean;
+}
+
 export interface FormSubmissionPayload {
   registrationId?: string;
   timestamp?: string;
@@ -74,6 +91,9 @@ export interface FormSubmissionPayload {
   nameArabic?: string;
   email?: string;
   phone?: string;
+  surveyId?: number;
+  questionsSheet?: string;
+  answersSheet?: string;
   answers: Array<{
     question: string;
     answer: string;
@@ -98,10 +118,11 @@ export interface SubscriberRecord {
   sequence: string | number;     // Column A: رقم التسلسل
   studentId: string;             // Column B: Student ID
   studentName: string;           // Column C: Student Name
-  totalScore?: string | number;  // Column D: عدد مجموع النقاط
-  combinedAnswers?: string;      // Column E: تجميع كل الإجابات (|||)
-  aiAnalysis?: string;           // Column F: تحليل الذكاء الاصطناعي
+  totalScore?: string | number;  // Column D: عدد مجموع النقاط (الاستبيان 1)
+  combinedAnswers?: string;      // Column E: تجميع كل الإجابات (|||) (الاستبيان 1)
+  aiAnalysis?: string;           // Column F: تحليل الذكاء الاصطناعي (الاستبيان 1)
   hasAnswered: boolean;
+  surveys?: Record<number, SubscriberSurveyResult>; // نتائج كل استبيان (1، 2، 3، 4...)
 }
 
 export interface AnalysisSettings {

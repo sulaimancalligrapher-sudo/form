@@ -19,6 +19,11 @@ import { SuccessReceipt } from "./components/SuccessReceipt";
 import { SheetSettingsModal } from "./components/SheetSettingsModal";
 import { AdminDashboard } from "./components/AdminDashboard";
 import {
+  AdminLoginModal,
+  isAdminLoggedIn,
+  setAdminLoggedIn
+} from "./components/AdminLoginModal";
+import {
   getEffectiveUiTranslations,
   getEffectiveQuestionTranslation,
   getCustomQuestionTranslations,
@@ -49,6 +54,11 @@ import {
 } from "./utils/googleBackendBridge";
 import { analyzeSubscriberAnswers, getAnalysisSettings } from "./utils/aiAnalyzer";
 import {
+  getActiveSurveyIdFromUrl,
+  getSurveyById,
+  getSheetNamesForSurvey
+} from "./utils/surveyManager";
+import {
   Send,
   Loader2,
   AlertCircle,
@@ -62,41 +72,56 @@ import {
 
 export default function App() {
   const [currentLang, setCurrentLang] = useState<FormLang>("ar");
+  const [activeSurveyId, setActiveSurveyId] = useState<number>(() => getActiveSurveyIdFromUrl());
   const [questions, setQuestions] = useState<RegistrationQuestion[]>(DEFAULT_FORM_QUESTIONS);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  // View Router: "form" (default public form) or "admin" (Admin Dashboard)
-  const [currentView, setCurrentView] = useState<"form" | "admin">(() => {
+  // Helper to check if current URL is the private Admin URL (/admin, ?admin, #admin)
+  const checkUrlHasAdmin = useCallback(() => {
+    if (typeof window === "undefined") return false;
+    const path = window.location.pathname.toLowerCase();
+    const hash = window.location.hash.toLowerCase();
+    const search = window.location.search.toLowerCase();
+    return (
+      path.includes("/admin") ||
+      hash.includes("admin") ||
+      search.includes("view=admin") ||
+      search.includes("admin")
+    );
+  }, []);
+
+  // Admin authentication & login modal state
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => isAdminLoggedIn());
+  const [isAdminLoginModalOpen, setIsAdminLoginModalOpen] = useState<boolean>(() => {
     if (typeof window !== "undefined") {
       const path = window.location.pathname.toLowerCase();
       const hash = window.location.hash.toLowerCase();
       const search = window.location.search.toLowerCase();
-      if (
+      const isUrlAdmin =
         path.includes("/admin") ||
         hash.includes("admin") ||
         search.includes("view=admin") ||
-        search.includes("admin")
-      ) {
-        return "admin";
+        search.includes("admin");
+      if (isUrlAdmin && !isAdminLoggedIn()) {
+        return true;
       }
     }
-    return "form";
+    return false;
   });
+
+  // View Router: "form" (default public form or admin-unlocked form header) or "admin" (Admin Dashboard)
+  const [currentView, setCurrentView] = useState<"form" | "admin">("form");
 
   // Keep route synced with browser back/forward and hash changes
   useEffect(() => {
     const handlePopState = () => {
-      const path = window.location.pathname.toLowerCase();
-      const hash = window.location.hash.toLowerCase();
-      const search = window.location.search.toLowerCase();
-      if (
-        path.includes("/admin") ||
-        hash.includes("admin") ||
-        search.includes("view=admin") ||
-        search.includes("admin")
-      ) {
-        setCurrentView("admin");
+      setActiveSurveyId(getActiveSurveyIdFromUrl());
+      if (checkUrlHasAdmin()) {
+        if (!isAdminLoggedIn()) {
+          setIsAdminLoginModalOpen(true);
+          setCurrentView("form");
+        }
       } else {
         setCurrentView("form");
       }
@@ -108,19 +133,55 @@ export default function App() {
       window.removeEventListener("popstate", handlePopState);
       window.removeEventListener("hashchange", handlePopState);
     };
-  }, []);
+  }, [checkUrlHasAdmin]);
+
+  const openAdminRoute = () => {
+    if (typeof window !== "undefined") {
+      window.history.pushState(null, "", "/admin");
+    }
+    if (isAdminAuthenticated) {
+      setCurrentView("admin");
+    } else {
+      setIsAdminLoginModalOpen(true);
+    }
+  };
 
   const navigateToAdmin = () => {
+    if (!isAdminAuthenticated) {
+      if (typeof window !== "undefined") {
+        window.history.pushState(null, "", "/admin");
+      }
+      setIsAdminLoginModalOpen(true);
+      return;
+    }
     setCurrentView("admin");
     if (typeof window !== "undefined") {
       window.history.pushState(null, "", "/admin");
     }
   };
 
-  const navigateToForm = () => {
+  const navigateToForm = (targetSurveyId?: number) => {
+    if (targetSurveyId && targetSurveyId >= 1) {
+      setActiveSurveyId(targetSurveyId);
+      setAnswers({});
+      setErrors({});
+      setIsSuccess(false);
+      if (typeof window !== "undefined") {
+        const cleanPath = window.location.pathname.replace(/\/admin\/?$/i, "") || "/";
+        window.history.pushState(null, "", `${cleanPath}?survey=${targetSurveyId}`);
+      }
+    }
+    setCurrentView("form");
+  };
+
+  const handleAdminLogout = () => {
+    setAdminLoggedIn(false);
+    setIsAdminAuthenticated(false);
+    setIsSettingsOpen(false);
     setCurrentView("form");
     if (typeof window !== "undefined") {
-      window.history.pushState(null, "", "/");
+      const cleanPath = window.location.pathname.replace(/\/admin\/?$/i, "") || "/";
+      window.history.pushState(null, "", cleanPath);
     }
   };
 
@@ -151,7 +212,8 @@ export default function App() {
           cleanId,
           cleanName,
           customScriptUrl || getActiveScriptUrl(),
-          customSheetId || getActiveSpreadsheetId()
+          customSheetId || getActiveSpreadsheetId(),
+          activeSurveyId
         );
 
         if (check.valid && check.status === "ok") {
@@ -185,7 +247,7 @@ export default function App() {
         setIsVerifyingSubscriber(false);
       }
     },
-    []
+    [activeSurveyId]
   );
 
   // Auto-detect subscriber session on mount and verify against المشتركين sheet
@@ -254,13 +316,15 @@ export default function App() {
   const [telegramConfig, setTelegramConfigState] = useState<TelegramConfig>(getTelegramConfig());
   const [isRefreshingQuestions, setIsRefreshingQuestions] = useState(false);
 
-  // Load questions dynamically from Google Sheet (RegistrationQuestions)
-  const loadQuestions = useCallback(async (targetSheetId?: string, targetScriptUrl?: string) => {
+  // Load questions dynamically from Google Sheet (RegistrationQuestions or RegistrationQuestions_N)
+  const loadQuestions = useCallback(async (targetSheetId?: string, targetScriptUrl?: string, force = false) => {
     setIsRefreshingQuestions(true);
     try {
       const fetched = await fetchFormQuestionsBridge(
         targetScriptUrl || scriptUrl,
-        targetSheetId || spreadsheetId
+        targetSheetId || spreadsheetId,
+        force,
+        activeSurveyId
       );
       if (fetched && fetched.length > 0) {
         setQuestions(fetched);
@@ -270,7 +334,7 @@ export default function App() {
     } finally {
       setIsRefreshingQuestions(false);
     }
-  }, [scriptUrl, spreadsheetId]);
+  }, [scriptUrl, spreadsheetId, activeSurveyId]);
 
   // Fetch questions on component mount
   useEffect(() => {
@@ -485,8 +549,14 @@ export default function App() {
     let detectedPhone = "";
     let detectedEmail = "";
 
-    // Double-check duplicate submission before sending
-    const preCheck = await verifySubscriberInSheetBridge(activeSubId, activeSubName, scriptUrl, spreadsheetId);
+    // Double-check duplicate submission before sending for THIS survey
+    const preCheck = await verifySubscriberInSheetBridge(
+      activeSubId,
+      activeSubName,
+      scriptUrl,
+      spreadsheetId,
+      activeSurveyId
+    );
     if (!preCheck.valid) {
       setIsSubmitting(false);
       setSubmissionProgress(null);
@@ -558,9 +628,9 @@ export default function App() {
       })
       .join(" ||| ");
 
-    // Run AI Analysis for Column F of المشتركين sheet (for administration only)
+    // Run AI Analysis for this survey's columns in المشتركين sheet (for administration only)
     let aiAnalysisText = "";
-    const analysisSettings = getAnalysisSettings();
+    const analysisSettings = getAnalysisSettings(activeSurveyId);
     if (analysisSettings.autoAnalyzeOnSubmit) {
       try {
         const sanitizedAnswersForAi = formattedAnswers.map((item) => ({
@@ -583,6 +653,8 @@ export default function App() {
       }
     }
 
+    const { questionsSheetName, answersSheetName } = getSheetNamesForSurvey(activeSurveyId);
+
     try {
       const result = await submitRegistrationBridge({
         registrationId: activeSubId,
@@ -590,6 +662,9 @@ export default function App() {
         name: activeSubName,
         phone: detectedPhone,
         email: detectedEmail,
+        surveyId: activeSurveyId,
+        questionsSheet: questionsSheetName,
+        answersSheet: answersSheetName,
         answers: formattedAnswers,
         combinedAnswers,
         aiAnalysis: aiAnalysisText,
@@ -662,8 +737,8 @@ export default function App() {
   }).length;
   const progressPercent = Math.min(100, Math.round((answeredCount / (inputQuestionsCount || 1)) * 100));
 
-  // If Admin View is active, render full Admin Dashboard
-  if (currentView === "admin") {
+  // If Admin View is active and authenticated, render full Admin Dashboard
+  if (currentView === "admin" && isAdminAuthenticated) {
     return (
       <>
         <AdminDashboard
@@ -674,6 +749,7 @@ export default function App() {
           }}
           onOpenSettingsModal={() => setIsSettingsOpen(true)}
           onNavigateToForm={navigateToForm}
+          onAdminLogout={handleAdminLogout}
           spreadsheetId={spreadsheetId}
           scriptUrl={scriptUrl}
           driveFolderId={driveFolderId}
@@ -709,6 +785,8 @@ export default function App() {
         onRefreshQuestions={() => loadQuestions()}
         isRefreshing={isRefreshingQuestions}
         spreadsheetId={spreadsheetId}
+        isAdminAuthenticated={isAdminAuthenticated}
+        onAdminLogout={handleAdminLogout}
       />
 
       {/* Main Content Area */}
@@ -728,11 +806,20 @@ export default function App() {
           <div className="space-y-6 animate-in fade-in duration-300">
             {/* Form Hero Card */}
             <div className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-8 shadow-xs">
+              {activeSurveyId > 1 && (
+                <div className="mb-3 inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold">
+                  <span>📋 {getSurveyById(activeSurveyId).title}</span>
+                </div>
+              )}
               <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight mb-2.5">
-                {t.formTitle}
+                {activeSurveyId > 1 && currentLang === "ar"
+                  ? getSurveyById(activeSurveyId).title
+                  : t.formTitle}
               </h2>
               <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                {t.formSubtitle}
+                {activeSurveyId > 1 && currentLang === "ar" && getSurveyById(activeSurveyId).subtitle
+                  ? getSurveyById(activeSurveyId).subtitle
+                  : t.formSubtitle}
               </p>
             </div>
 
@@ -857,33 +944,60 @@ export default function App() {
       {/* Footer */}
       <footer className="w-full py-6 border-t border-slate-200 bg-white text-center text-xs text-slate-400">
         <div className="max-w-5xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>مشروع استمارة تسجيل متكامل متصل بـ Google Sheets & Drive</span>
-          <div className="flex items-center gap-4 flex-wrap justify-center">
-            <button
-              type="button"
-              onClick={navigateToAdmin}
-              className="text-slate-700 hover:text-emerald-700 font-bold flex items-center gap-1 transition-colors"
-            >
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-              <span>لوحة الإدارة (Admin)</span>
-            </button>
-            <span className="text-slate-300">|</span>
-            <button
-              type="button"
-              onClick={() => setIsSettingsOpen(true)}
-              className="text-emerald-700 hover:underline font-semibold"
-            >
-              دليل الربط وكود سكريبت
-            </button>
-            <span className="text-slate-300">|</span>
-            <span>جاهز لـ GitHub و Vercel</span>
+          <span>{t.headerTitle || "مركز يوسف ذنون لتعليم الخط العربي أون لاين"}</span>
+          <div className="flex items-center gap-3 flex-wrap justify-center">
+            {isAdminAuthenticated ? (
+              <>
+                <button
+                  type="button"
+                  onClick={navigateToAdmin}
+                  className="text-slate-700 hover:text-emerald-700 font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>لوحة الإدارة</span>
+                </button>
+                <span className="text-slate-300">|</span>
+                <button
+                  type="button"
+                  onClick={() => setIsSettingsOpen(true)}
+                  className="text-emerald-700 hover:underline font-semibold cursor-pointer"
+                >
+                  إعدادات الربط والشيت
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={openAdminRoute}
+                title="بوابة الإدارة الخاصة (/admin)"
+                className="p-1.5 rounded-lg text-slate-300 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <Lock className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
       </footer>
 
+      {/* Private Admin Login Modal (opens when visiting /admin) */}
+      <AdminLoginModal
+        isOpen={isAdminLoginModalOpen}
+        onSuccess={() => {
+          setIsAdminAuthenticated(true);
+          setIsAdminLoginModalOpen(false);
+        }}
+        onCancel={() => {
+          setIsAdminLoginModalOpen(false);
+          if (typeof window !== "undefined") {
+            const cleanPath = window.location.pathname.replace(/\/admin\/?$/i, "") || "/";
+            window.history.pushState(null, "", cleanPath);
+          }
+        }}
+      />
+
       {/* Settings & Setup Guide Modal */}
       <SheetSettingsModal
-        isOpen={isSettingsOpen}
+        isOpen={isSettingsOpen && isAdminAuthenticated}
         onClose={() => setIsSettingsOpen(false)}
         spreadsheetId={spreadsheetId}
         scriptUrl={scriptUrl}
