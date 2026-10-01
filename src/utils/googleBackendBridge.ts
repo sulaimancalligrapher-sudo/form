@@ -20,6 +20,7 @@ import {
   DEFAULT_FORM_QUESTIONS
 } from "../data/defaultConfig";
 import { DEFAULT_FORM_TRANSLATIONS } from "../data/defaultFormTranslations";
+import { getEffectiveQuestionTranslation } from "./translationStorage";
 import {
   TelegramConfig,
   FormSubmissionPayload,
@@ -522,6 +523,10 @@ export async function fetchFormQuestionsBridge(
         val(4) === "إجباري";
       const qImage = val(5);
       const qLink = val(6);
+      const qTitleEn = val(7);
+      const qTitleTh = val(8);
+      const qOptsEnStr = val(9);
+      const qOptsThStr = val(10);
 
       // Skip header row if present
       if (
@@ -653,8 +658,22 @@ export async function fetchFormQuestionsBridge(
         // Button/External Link: check Column G first, then Column F
         const resolvedLink = (qLink && qLink !== "-") ? qLink : (fieldType === "button_title" ? qImage : undefined);
 
-        // Attach translation if exists in dictionary
-        const fallbackTrans = DEFAULT_FORM_TRANSLATIONS[qText] || DEFAULT_FORM_TRANSLATIONS[qText.trim()];
+        // Attach translation from built-in & custom dictionary + optional sheet columns (H-K)
+        const baseTrans = getEffectiveQuestionTranslation(qText, opts);
+        const sheetOptsEn = qOptsEnStr
+          ? qOptsEnStr.split("|||").map((s: string) => s.trim())
+          : undefined;
+        const sheetOptsTh = qOptsThStr
+          ? qOptsThStr.split("|||").map((s: string) => s.trim())
+          : undefined;
+
+        const mergedTrans = {
+          ...baseTrans,
+          ...(qTitleEn ? { questionEn: qTitleEn } : {}),
+          ...(qTitleTh ? { questionTh: qTitleTh } : {}),
+          ...(sheetOptsEn && sheetOptsEn.length > 0 ? { optionsEn: sheetOptsEn } : {}),
+          ...(sheetOptsTh && sheetOptsTh.length > 0 ? { optionsTh: sheetOptsTh } : {})
+        };
 
         parsedQuestions.push({
           id: parsedQuestions.length + 1,
@@ -665,7 +684,7 @@ export async function fetchFormQuestionsBridge(
           required: qRequired,
           imageUrl: resolvedImage ? formatImageUrl(resolvedImage) : undefined,
           externalLink: resolvedLink || undefined,
-          translations: fallbackTrans
+          translations: mergedTrans
         });
       }
     }
@@ -704,7 +723,10 @@ export async function fetchFormQuestionsBridge(
         const enriched = data.questions.map((q: any, idx: number) => ({
           ...q,
           id: q.id || idx + 1,
-          translations: q.translations || DEFAULT_FORM_TRANSLATIONS[q.question]
+          translations: {
+            ...getEffectiveQuestionTranslation(q.question || "", q.options),
+            ...(q.translations || {})
+          }
         }));
         if (typeof window !== "undefined") {
           try {

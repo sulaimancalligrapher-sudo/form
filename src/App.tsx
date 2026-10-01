@@ -18,7 +18,13 @@ import { FormField } from "./components/FormField";
 import { SuccessReceipt } from "./components/SuccessReceipt";
 import { SheetSettingsModal } from "./components/SheetSettingsModal";
 import { AdminDashboard } from "./components/AdminDashboard";
-import { getEffectiveUiTranslations } from "./utils/translationStorage";
+import {
+  getEffectiveUiTranslations,
+  getEffectiveQuestionTranslation,
+  getCustomQuestionTranslations,
+  saveCustomQuestionTranslations
+} from "./utils/translationStorage";
+import { translateWithAi } from "./utils/aiTranslator";
 import { SubscriberCard } from "./components/SubscriberCard";
 import {
   detectSubscriberSession,
@@ -284,6 +290,81 @@ export default function App() {
     html.lang = currentLang;
     html.dir = currentLang === "ar" ? "rtl" : "ltr";
   }, [currentLang]);
+
+  // Auto-translate any newly added Google Sheet questions/options on any device when switching to EN or TH
+  useEffect(() => {
+    if (currentLang === "ar" || questions.length === 0) return;
+    let isCancelled = false;
+
+    const autoTranslateMissing = async () => {
+      const targetLang: "en" | "th" = currentLang === "th" ? "th" : "en";
+      const titleField = targetLang === "th" ? "questionTh" : "questionEn";
+      const optsField = targetLang === "th" ? "optionsTh" : "optionsEn";
+
+      let updatedAny = false;
+      const customMap = { ...getCustomQuestionTranslations() };
+
+      for (const q of questions) {
+        if (isCancelled) break;
+        const qKey = (q.question || "").trim();
+        if (!qKey) continue;
+
+        const eff = {
+          ...(q.translations || {}),
+          ...getEffectiveQuestionTranslation(qKey, q.options)
+        };
+
+        const needsTitle = !eff[titleField] || !eff[titleField]?.trim();
+        const rawOpts = q.options || [];
+        const existingOpts = eff[optsField] || [];
+        const needsOptions =
+          rawOpts.length > 0 &&
+          rawOpts.some((_, idx) => !existingOpts[idx] || !existingOpts[idx].trim());
+
+        if (!needsTitle && !needsOptions) continue;
+
+        const nextEntry = { ...(customMap[qKey] || eff) };
+
+        if (needsTitle) {
+          try {
+            const trTitle = await translateWithAi(qKey, targetLang, "Form question label");
+            if (trTitle && trTitle.trim() !== qKey) {
+              nextEntry[titleField] = trTitle.trim();
+              updatedAny = true;
+            }
+          } catch (e) {}
+        }
+
+        if (needsOptions && !isCancelled) {
+          const newOptsArr = [...existingOpts];
+          for (let i = 0; i < rawOpts.length; i++) {
+            if (newOptsArr[i] && newOptsArr[i].trim()) continue;
+            const cleanOpt = rawOpts[i].replace(/^\s*\d+\s*[-—–ـ:]\s*/, "").trim() || rawOpts[i].trim();
+            try {
+              const trOpt = await translateWithAi(cleanOpt, targetLang, "Form choice option");
+              newOptsArr[i] = trOpt || cleanOpt;
+              updatedAny = true;
+            } catch (e) {
+              newOptsArr[i] = cleanOpt;
+            }
+          }
+          nextEntry[optsField] = newOptsArr;
+        }
+
+        customMap[qKey] = nextEntry;
+      }
+
+      if (updatedAny && !isCancelled) {
+        saveCustomQuestionTranslations(customMap);
+        setTranslationVersion((v) => v + 1);
+      }
+    };
+
+    autoTranslateMissing();
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentLang, questions]);
 
   const t = useMemo(() => {
     return getEffectiveUiTranslations(currentLang);
@@ -677,6 +758,7 @@ export default function App() {
                   setManualSubName(val);
                   if (subscriberError) setSubscriberError(null);
                 }}
+                currentLang={currentLang}
               />
             </div>
 

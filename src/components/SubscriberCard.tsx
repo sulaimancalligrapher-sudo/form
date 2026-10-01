@@ -11,6 +11,7 @@ import {
   AlertCircle,
   ShieldCheck
 } from "lucide-react";
+import { FormLang } from "../types";
 import { SubscriberData } from "../utils/subscriberSession";
 import { QrScannerModal } from "./QrScannerModal";
 
@@ -26,7 +27,107 @@ interface SubscriberCardProps {
   setManualId: (val: string) => void;
   manualName: string;
   setManualName: (val: string) => void;
+  currentLang?: FormLang;
 }
+
+const SUBSCRIBER_CARD_TEXTS: Record<
+  FormLang,
+  {
+    verifiedBadge: string;
+    changeSubscriber: string;
+    alreadyCompletedBadge: string;
+    welcomePrefix: string;
+    idPrefix: string;
+    alreadyCompletedDesc: string;
+    loginAnotherSubscriber: string;
+    gateBadge: string;
+    gateTitle: string;
+    gateSubtitle: string;
+    scanQr: string;
+    studentIdLabel: string;
+    studentIdPlaceholder: string;
+    studentNameLabel: string;
+    studentNamePlaceholder: string;
+    lockedNotice: string;
+    verifyingBtn: string;
+    verifyAndUnlockBtn: string;
+    errMissingId: string;
+    errMissingName: string;
+  }
+> = {
+  ar: {
+    verifiedBadge: "تم التحقق من بيانات المشترك بنجاح",
+    changeSubscriber: "تغيير المشترك",
+    alreadyCompletedBadge: "الاستبيان مكتمل مسبقاً",
+    welcomePrefix: "مرحباً",
+    idPrefix: "رقم",
+    alreadyCompletedDesc:
+      "لقد قمت بالإجابة على هذا الاستبيان مسبقاً وتم تسجيل إجاباتك ونتيجتك في سجل المشتركين بنجاح. لا يمكن الإجابة على الاستبيان مرة أخرى.",
+    loginAnotherSubscriber: "دخول مشترك آخر",
+    gateBadge: "بوابة تسجيل دخول المشتركين",
+    gateTitle: "أدخل رقم المشترك واسمك لفتح الاستبيان",
+    gateSubtitle:
+      "يجب أن يتطابق الرقم (Student ID) والاسم (Student Name) مع البيانات المسجلة في ورقة المشتركين",
+    scanQr: "مسح كود QR",
+    studentIdLabel: "رقم المشترك (Student ID):",
+    studentIdPlaceholder: "أدخل رقم المشترك...",
+    studentNameLabel: "اسم المشترك (Student Name):",
+    studentNamePlaceholder: "أدخل الاسم الكامل كما هو مسجل...",
+    lockedNotice: "أسئلة الاستبيان مقفلة حتى يتم التحقق من صحة الاسم والرقم في ورقة المشتركين.",
+    verifyingBtn: "جاري التحقق من السجل...",
+    verifyAndUnlockBtn: "تحقق وفتح الاستبيان",
+    errMissingId: "يرجى إدخال رقم المشترك (Student ID) أولاً.",
+    errMissingName: "يرجى إدخال اسم المشترك (Student Name) أولاً."
+  },
+  en: {
+    verifiedBadge: "Subscriber Identity Verified Successfully",
+    changeSubscriber: "Change Subscriber",
+    alreadyCompletedBadge: "Questionnaire Already Completed",
+    welcomePrefix: "Welcome",
+    idPrefix: "ID",
+    alreadyCompletedDesc:
+      "You have already completed this questionnaire and your answers and score have been recorded. Multiple submissions are not allowed.",
+    loginAnotherSubscriber: "Sign in as another subscriber",
+    gateBadge: "Subscriber Login Gate",
+    gateTitle: "Enter your Student ID and Name to unlock the questionnaire",
+    gateSubtitle:
+      "Your Student ID and Student Name must match the registered records in the Subscribers sheet",
+    scanQr: "Scan QR Code",
+    studentIdLabel: "Student ID:",
+    studentIdPlaceholder: "Enter your Student ID...",
+    studentNameLabel: "Student Name:",
+    studentNamePlaceholder: "Enter your registered full name...",
+    lockedNotice: "Questionnaire questions are locked until your ID and Name are verified.",
+    verifyingBtn: "Verifying record...",
+    verifyAndUnlockBtn: "Verify & Unlock Form",
+    errMissingId: "Please enter your Student ID first.",
+    errMissingName: "Please enter your Student Name first."
+  },
+  th: {
+    verifiedBadge: "ยืนยันข้อมูลผู้สมัครเรียบร้อยแล้ว",
+    changeSubscriber: "เปลี่ยนผู้สมัคร",
+    alreadyCompletedBadge: "ทำแบบสอบถามเสร็จสิ้นแล้ว",
+    welcomePrefix: "ยินดีต้อนรับ",
+    idPrefix: "รหัส",
+    alreadyCompletedDesc:
+      "คุณได้ตอบแบบสอบถามนี้ไปแล้ว และระบบได้บันทึกคำตอบพร้อมคะแนนของคุณเรียบร้อยแล้ว ไม่สามารถส่งคำตอบซ้ำได้",
+    loginAnotherSubscriber: "เข้าสู่ระบบด้วยผู้สมัครท่านอื่น",
+    gateBadge: "ประตูเข้าสู่ระบบสำหรับผู้สมัคร",
+    gateTitle: "กรอกรหัสผู้สมัครและชื่อของคุณเพื่อเปิดแบบสอบถาม",
+    gateSubtitle:
+      "รหัสประจำตัว (Student ID) และชื่อ (Student Name) ต้องตรงกับข้อมูลที่ลงทะเบียนไว้ในระบบ",
+    scanQr: "สแกน QR Code",
+    studentIdLabel: "รหัสผู้สมัคร (Student ID):",
+    studentIdPlaceholder: "กรอกรหัสผู้สมัครของคุณ...",
+    studentNameLabel: "ชื่อผู้สมัคร (Student Name):",
+    studentNamePlaceholder: "กรอกชื่อเต็มตามที่ลงทะเบียน...",
+    lockedNotice: "คำถามจะถูกล็อกจนกว่าจะยืนยันรหัสและชื่อผู้สมัครถูกต้อง",
+    verifyingBtn: "กำลังตรวจสอบข้อมูล...",
+    verifyAndUnlockBtn: "ยืนยันและเปิดแบบสอบถาม",
+    errMissingId: "กรุณากรอกรหัสผู้สมัคร (Student ID) ก่อน",
+    errMissingName: "กรุณากรอกชื่อผู้สมัคร (Student Name) ก่อน"
+  }
+};
 
 export const SubscriberCard: React.FC<SubscriberCardProps> = ({
   subscriber,
@@ -39,21 +140,23 @@ export const SubscriberCard: React.FC<SubscriberCardProps> = ({
   manualId,
   setManualId,
   manualName,
-  setManualName
+  setManualName,
+  currentLang = "ar"
 }) => {
   const [isQrOpen, setIsQrOpen] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const txt = SUBSCRIBER_CARD_TEXTS[currentLang] || SUBSCRIBER_CARD_TEXTS.ar;
 
   const handleConfirmSubscriber = async () => {
     const cleanId = manualId.trim();
     const cleanName = manualName.trim();
 
     if (!cleanId) {
-      setLocalError("يرجى إدخال رقم المشترك (Student ID) أولاً.");
+      setLocalError(txt.errMissingId);
       return;
     }
     if (!cleanName) {
-      setLocalError("يرجى إدخال اسم المشترك (Student Name) أولاً.");
+      setLocalError(txt.errMissingName);
       return;
     }
 
@@ -153,7 +256,7 @@ export const SubscriberCard: React.FC<SubscriberCardProps> = ({
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-xs font-bold text-emerald-800 bg-emerald-100 px-2.5 py-0.5 rounded-md flex items-center gap-1">
                   <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>تم التحقق من بيانات المشترك بنجاح</span>
+                  <span>{txt.verifiedBadge}</span>
                 </span>
               </div>
               <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -172,10 +275,10 @@ export const SubscriberCard: React.FC<SubscriberCardProps> = ({
               type="button"
               onClick={onClearSubscriber}
               className="text-xs text-slate-600 hover:text-rose-600 font-bold px-3 py-1.5 rounded-xl hover:bg-rose-50 transition-colors cursor-pointer bg-white border border-slate-200 flex items-center gap-1.5"
-              title="تسجيل الخروج أو تغيير المشترك"
+              title={txt.changeSubscriber}
             >
               <LogOut className="w-3.5 h-3.5" />
-              <span>تغيير المشترك</span>
+              <span>{txt.changeSubscriber}</span>
             </button>
           </div>
         </div>
@@ -192,13 +295,13 @@ export const SubscriberCard: React.FC<SubscriberCardProps> = ({
         </div>
         <div className="space-y-1.5 max-w-lg mx-auto">
           <span className="inline-block text-xs font-bold text-amber-800 bg-amber-100 px-3 py-1 rounded-full">
-            الاستبيان مكتمل مسبقاً
+            {txt.alreadyCompletedBadge}
           </span>
           <h3 className="text-lg sm:text-xl font-black text-slate-900">
-            مرحباً {subscriber.name} (رقم: {subscriber.id})
+            {txt.welcomePrefix} {subscriber.name} ({txt.idPrefix}: {subscriber.id})
           </h3>
           <p className="text-xs sm:text-sm text-slate-700 font-medium leading-relaxed">
-            لقد قمت بالإجابة على هذا الاستبيان مسبقاً وتم تسجيل إجاباتك ونتيجتك في سجل المشتركين بنجاح. لا يمكن الإجابة على الاستبيان مرة أخرى.
+            {txt.alreadyCompletedDesc}
           </p>
         </div>
         <div className="pt-2">
@@ -208,7 +311,7 @@ export const SubscriberCard: React.FC<SubscriberCardProps> = ({
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-xs font-bold transition-all cursor-pointer shadow-2xs"
           >
             <LogOut className="w-4 h-4" />
-            <span>دخول مشترك آخر</span>
+            <span>{txt.loginAnotherSubscriber}</span>
           </button>
         </div>
       </div>
@@ -226,13 +329,13 @@ export const SubscriberCard: React.FC<SubscriberCardProps> = ({
             </div>
             <div>
               <span className="text-[11px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-md">
-                بوابة تسجيل دخول المشتركين
+                {txt.gateBadge}
               </span>
               <h3 className="text-base sm:text-lg font-black text-slate-900 mt-1">
-                أدخل رقم المشترك واسمك لفتح الاستبيان
+                {txt.gateTitle}
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                يجب أن يتطابق الرقم (Student ID) والاسم (Student Name) مع البيانات المسجلة في ورقة المشتركين
+                {txt.gateSubtitle}
               </p>
             </div>
           </div>
@@ -243,7 +346,7 @@ export const SubscriberCard: React.FC<SubscriberCardProps> = ({
             className="shrink-0 self-start sm:self-center flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-all shadow-xs active:scale-98 cursor-pointer"
           >
             <QrCode className="w-4 h-4 text-emerald-400" />
-            <span>مسح كود QR</span>
+            <span>{txt.scanQr}</span>
           </button>
         </div>
 
@@ -259,7 +362,7 @@ export const SubscriberCard: React.FC<SubscriberCardProps> = ({
           <div className="space-y-1.5">
             <label className="block text-xs font-bold text-slate-700 flex items-center gap-1.5">
               <Hash className="w-3.5 h-3.5 text-emerald-600" />
-              <span>رقم المشترك (Student ID):</span>
+              <span>{txt.studentIdLabel}</span>
               <span className="text-rose-500">*</span>
             </label>
             <input
@@ -271,7 +374,7 @@ export const SubscriberCard: React.FC<SubscriberCardProps> = ({
                 if (localError) setLocalError(null);
               }}
               onKeyDown={handleKeyDown}
-              placeholder="أدخل رقم المشترك..."
+              placeholder={txt.studentIdPlaceholder}
               className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/20 text-sm font-bold text-slate-800 transition-all outline-hidden placeholder:text-slate-400 placeholder:font-normal disabled:opacity-60"
             />
           </div>
@@ -280,7 +383,7 @@ export const SubscriberCard: React.FC<SubscriberCardProps> = ({
           <div className="space-y-1.5">
             <label className="block text-xs font-bold text-slate-700 flex items-center gap-1.5">
               <User className="w-3.5 h-3.5 text-emerald-600" />
-              <span>اسم المشترك (Student Name):</span>
+              <span>{txt.studentNameLabel}</span>
               <span className="text-rose-500">*</span>
             </label>
             <input
@@ -292,7 +395,7 @@ export const SubscriberCard: React.FC<SubscriberCardProps> = ({
                 if (localError) setLocalError(null);
               }}
               onKeyDown={handleKeyDown}
-              placeholder="أدخل الاسم الكامل كما هو مسجل..."
+              placeholder={txt.studentNamePlaceholder}
               className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/20 text-sm font-bold text-slate-800 transition-all outline-hidden placeholder:text-slate-400 placeholder:font-normal disabled:opacity-60"
             />
           </div>
@@ -301,7 +404,7 @@ export const SubscriberCard: React.FC<SubscriberCardProps> = ({
         <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 border-t border-slate-100">
           <p className="text-[11px] text-slate-500 font-medium flex items-center gap-1.5">
             <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            <span>أسئلة الاستبيان مقفلة حتى يتم التحقق من صحة الاسم والرقم في ورقة المشتركين.</span>
+            <span>{txt.lockedNotice}</span>
           </p>
 
           <button
@@ -313,12 +416,12 @@ export const SubscriberCard: React.FC<SubscriberCardProps> = ({
             {isVerifying ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                <span>جاري التحقق من السجل...</span>
+                <span>{txt.verifyingBtn}</span>
               </>
             ) : (
               <>
                 <Check className="w-4 h-4 stroke-[2.5]" />
-                <span>تحقق وفتح الاستبيان</span>
+                <span>{txt.verifyAndUnlockBtn}</span>
               </>
             )}
           </button>

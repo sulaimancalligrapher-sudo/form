@@ -846,6 +846,10 @@ function getFormQuestionsFromSheet() {
       var reqVal = row[4] ? String(row[4]).trim() : "";
       var imgUrl = row[5] ? String(row[5]).trim() : "";
       var extLink = row[6] ? String(row[6]).trim() : "";
+      var qEn = row[7] ? String(row[7]).trim() : "";
+      var qTh = row[8] ? String(row[8]).trim() : "";
+      var optsEnStr = row[9] ? String(row[9]).trim() : "";
+      var optsThStr = row[10] ? String(row[10]).trim() : "";
 
       // تحديد نوع العنصر
       var fieldType = "text";
@@ -883,6 +887,12 @@ function getFormQuestionsFromSheet() {
 
       var isReq = reqVal === "نعم" || reqVal.toLowerCase() === "true" || reqVal.toLowerCase() === "yes" || reqVal === "1";
 
+      var translations = {};
+      if (qEn) translations.questionEn = qEn;
+      if (qTh) translations.questionTh = qTh;
+      if (optsEnStr) translations.optionsEn = optsEnStr.split("|||").map(function(s) { return s.trim(); });
+      if (optsThStr) translations.optionsTh = optsThStr.split("|||").map(function(s) { return s.trim(); });
+
       questions.push({
         id: i,
         question: qText,
@@ -891,7 +901,8 @@ function getFormQuestionsFromSheet() {
         options: options,
         required: isReq,
         imageUrl: imgUrl,
-        externalLink: extLink
+        externalLink: extLink,
+        translations: translations
       });
     }
     return questions;
@@ -926,7 +937,7 @@ function getRegistrationAnswersRecords() {
   }
 }
 
-// 7. حفظ وتحديث أسئلة ورقة RegistrationQuestions من لوحة الإدارة
+// 7. حفظ وتحديث أسئلة وترجمات ورقة RegistrationQuestions من لوحة الإدارة
 function saveFormQuestionsToSheet(questions) {
   try {
     if (!questions || !Array.isArray(questions)) {
@@ -946,7 +957,11 @@ function saveFormQuestionsToSheet(questions) {
       "الخيارات المتاحة",
       "هل الحقل إجباري؟",
       "رابط الصورة المعروضة",
-      "رابط خارجي أو ملف PDF"
+      "رابط خارجي أو ملف PDF",
+      "السؤال بالإنجليزية (EN)",
+      "السؤال بالتايلاندية (TH)",
+      "الخيارات بالإنجليزية (EN)",
+      "الخيارات بالتايلاندية (TH)"
     ];
 
     sheet.clearContents();
@@ -987,6 +1002,12 @@ function saveFormQuestionsToSheet(questions) {
         typeAr = "عنوان زر";
       }
 
+      var tr = q.translations || {};
+      var qEnVal = tr.questionEn || "";
+      var qThVal = tr.questionTh || "";
+      var optsEnVal = Array.isArray(tr.optionsEn) ? tr.optionsEn.join("|||") : "";
+      var optsThVal = Array.isArray(tr.optionsTh) ? tr.optionsTh.join("|||") : "";
+
       rows.push([
         q.question || "",
         q.description || "",
@@ -994,12 +1015,16 @@ function saveFormQuestionsToSheet(questions) {
         optStr,
         reqStr,
         q.imageUrl || "",
-        q.externalLink || ""
+        q.externalLink || "",
+        qEnVal,
+        qThVal,
+        optsEnVal,
+        optsThVal
       ]);
     }
 
-    sheet.getRange(1, 1, rows.length, 7).setValues(rows);
-    sheet.getRange(1, 1, 1, 7)
+    sheet.getRange(1, 1, rows.length, 11).setValues(rows);
+    sheet.getRange(1, 1, 1, 11)
       .setFontWeight("bold")
       .setBackground("#1E293B")
       .setFontColor("#FFFFFF")

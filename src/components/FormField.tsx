@@ -1,6 +1,10 @@
 import React, { useState, useRef, useMemo } from "react";
 import { RegistrationQuestion, FormLang } from "../types";
-import { getEffectiveUiTranslations, getEffectiveQuestionTranslation } from "../utils/translationStorage";
+import {
+  getEffectiveUiTranslations,
+  getEffectiveQuestionTranslation,
+  getBuiltInOptionTranslation
+} from "../utils/translationStorage";
 import { ImageModal } from "./ImageModal";
 import {
   Upload,
@@ -55,7 +59,7 @@ export const FormField: React.FC<FormFieldProps> = ({
   // Multilingual question text resolution (custom translations take priority over defaults)
   const effectiveTrans = {
     ...(question.translations || {}),
-    ...getEffectiveQuestionTranslation(question.question)
+    ...getEffectiveQuestionTranslation(question.question, question.options)
   };
 
   const getQuestionTitle = (): string => {
@@ -91,11 +95,13 @@ export const FormField: React.FC<FormFieldProps> = ({
 
   // Returns the translated option label for display (EN / TH / AR) while keeping original option for saving
   const getTranslatedOptionLabel = (optIdx: number, originalOpt: string, isScored: boolean): string => {
-    if (currentLang === "en" && effectiveTrans.optionsEn && effectiveTrans.optionsEn[optIdx]?.trim()) {
-      return getCleanOptionLabel(effectiveTrans.optionsEn[optIdx].trim(), isScored);
+    if (currentLang === "en") {
+      const optEn = effectiveTrans.optionsEn?.[optIdx]?.trim() || getBuiltInOptionTranslation(originalOpt, "en");
+      if (optEn) return getCleanOptionLabel(optEn, isScored);
     }
-    if (currentLang === "th" && effectiveTrans.optionsTh && effectiveTrans.optionsTh[optIdx]?.trim()) {
-      return getCleanOptionLabel(effectiveTrans.optionsTh[optIdx].trim(), isScored);
+    if (currentLang === "th") {
+      const optTh = effectiveTrans.optionsTh?.[optIdx]?.trim() || getBuiltInOptionTranslation(originalOpt, "th");
+      if (optTh) return getCleanOptionLabel(optTh, isScored);
     }
     return getCleanOptionLabel(originalOpt, isScored);
   };

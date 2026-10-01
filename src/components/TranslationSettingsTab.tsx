@@ -26,6 +26,7 @@ import {
   getEffectiveQuestionTranslation
 } from "../utils/translationStorage";
 import { translateWithAi } from "../utils/aiTranslator";
+import { saveFormQuestionsBridge } from "../utils/googleBackendBridge";
 
 interface TranslationSettingsTabProps {
   questions: RegistrationQuestion[];
@@ -363,15 +364,29 @@ export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
 
     setIsTranslatingAllQuestions(false);
     setTranslatingAllProgress("");
-    showNotification(`🎉 اكتملت ترجمة جميع الأسئلة (${successCount} سؤال) إلى الإنجليزية والتايلاندية بنجاح!`);
+    // Sync translated questions to Google Sheet in the background for all devices
+    const enrichedQuestions = questions.map((q) => ({
+      ...q,
+      translations: getEffectiveQuestionTranslation(q.question, q.options)
+    }));
+    saveFormQuestionsBridge(enrichedQuestions).catch(() => {});
+    showNotification(`🎉 اكتملت ترجمة جميع الأسئلة (${successCount} سؤال) وحفظها لجميع الأجهزة (English + ภาษาไทย) بنجاح!`);
   };
 
   // Save changes
   const handleSaveAll = () => {
     saveCustomQuestionTranslations(questionTranslations);
     saveCustomUiTranslations(uiTranslations);
+    const enrichedQuestions = questions.map((q) => ({
+      ...q,
+      translations: {
+        ...getEffectiveQuestionTranslation(q.question, q.options),
+        ...(questionTranslations[q.question.trim()] || {})
+      }
+    }));
+    saveFormQuestionsBridge(enrichedQuestions).catch(() => {});
     onTranslationsUpdated();
-    showNotification("تم حفظ جميع الترجمات والنصوص بنجاح! تم تحديث الاستمارة فورياً.");
+    showNotification("تم حفظ جميع الترجمات والنصوص ومزامنتها مع قوقل شيت لجميع الأجهزة بنجاح!");
   };
 
   // Reset to defaults
@@ -388,7 +403,7 @@ export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
     if (!searchQuery.trim()) return questions;
     const query = searchQuery.toLowerCase();
     return questions.filter((q) => {
-      const eff = getEffectiveQuestionTranslation(q.question);
+      const eff = getEffectiveQuestionTranslation(q.question, q.options);
       const customForQ = questionTranslations[q.question.trim()] || {};
       const enTitle = customForQ.questionEn || eff.questionEn || "";
       const thTitle = customForQ.questionTh || eff.questionTh || "";
@@ -581,7 +596,7 @@ export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
             </div>
           ) : (
             filteredQuestions.map((q, idx) => {
-              const eff = getEffectiveQuestionTranslation(q.question);
+              const eff = getEffectiveQuestionTranslation(q.question, q.options);
               const customForQ = questionTranslations[q.question.trim()] || {};
               const isExpanded = expandedQuestionId === q.id || filteredQuestions.length <= 3;
 
