@@ -20,6 +20,7 @@ import { analyzeSubscriberAnswers, getAnalysisSettings } from "../utils/aiAnalyz
 import {
   getSurveysList,
   getSurveyPublicUrl,
+  getSurveyToken,
   getSheetNamesForSurvey
 } from "../utils/surveyManager";
 import { SurveyWorkspacePanel } from "./SurveyWorkspacePanel";
@@ -1157,7 +1158,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 text-xs font-black">
                         الاستبيان #{srv.id}
                       </span>
-                      <span className="text-xs font-mono text-slate-400">/?survey={srv.id}</span>
+                      <span className="text-xs font-mono text-emerald-400">/?s={getSurveyToken(srv.id)}</span>
                     </div>
                     <h3 className="font-bold text-sm text-white">{srv.title}</h3>
                     <div className="flex items-center gap-2">

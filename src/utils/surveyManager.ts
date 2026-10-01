@@ -2,6 +2,58 @@ import { SurveyDefinition } from "../types";
 
 const SURVEYS_STORAGE_KEY = "thnoon_surveys_definitions_v1";
 
+/**
+ * Generates a deterministic, non-sequential 6-character security token for any surveyId (1, 2, 3...)
+ * Works identically on all devices (Vercel, phones, desktops) without needing database lookup,
+ * while making it impossible for students to guess the next survey URL by typing 2, 3, 4.
+ */
+const PRESET_TOKENS: Record<number, string> = {
+  1: "k8m2x9",
+  2: "p4v9n3",
+  3: "w7r5q2",
+  4: "z3t8b6",
+  5: "m9c4h7",
+  6: "j2f6d8",
+  7: "x5n8p4",
+  8: "r6y3w9",
+  9: "b8q2k5",
+  10: "t4h7v3"
+};
+
+export function getSurveyToken(surveyId: number): string {
+  const cleanId = Math.max(1, Math.floor(Number(surveyId) || 1));
+  if (PRESET_TOKENS[cleanId]) {
+    return PRESET_TOKENS[cleanId];
+  }
+  // Deterministic non-sequential hash for surveyId > 10
+  const alphabet = "23456789abcdefghjkmnpqrstuvwxyz";
+  let seed = (cleanId * 2654435761) >>> 0;
+  let code = "";
+  for (let i = 0; i < 6; i++) {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    code += alphabet[seed % alphabet.length];
+  }
+  return code;
+}
+
+/**
+ * Resolves a non-sequential token from the URL back to its surveyId (1..200).
+ * Rejects plain sequential numbers like "2", "3" so students cannot guess the next survey.
+ */
+export function resolveSurveyIdFromToken(rawToken: string | null | undefined): number {
+  if (!rawToken) return 1;
+  const clean = rawToken.trim().toLowerCase();
+  if (!clean) return 1;
+
+  for (let id = 1; id <= 200; id++) {
+    if (getSurveyToken(id).toLowerCase() === clean) {
+      return id;
+    }
+  }
+
+  return 1;
+}
+
 export const DEFAULT_SURVEYS: SurveyDefinition[] = [
   {
     id: 1,
@@ -42,7 +94,6 @@ export function getSurveysList(): SurveyDefinition[] {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          // Ensure Survey 1 is always present
           const hasOne = parsed.some((s: SurveyDefinition) => Number(s.id) === 1);
           const list: SurveyDefinition[] = hasOne ? parsed : [DEFAULT_SURVEYS[0], ...parsed];
           return list
@@ -163,23 +214,20 @@ export function updateSurveyInfo(
 }
 
 /**
- * Reads the active survey ID from current URL (?survey=1, ?survey=2, etc.)
+ * Reads the active survey ID from current URL using the non-sequential token (?s=p4v9n3 or ?survey=p4v9n3)
  */
 export function getActiveSurveyIdFromUrl(): number {
   if (typeof window === "undefined") return 1;
   try {
     const params = new URLSearchParams(window.location.search);
-    const sParam = params.get("survey") || params.get("s") || params.get("stage");
-    if (sParam) {
-      const num = parseInt(sParam, 10);
-      if (!isNaN(num) && num >= 1) return num;
+    const tokenParam = params.get("s") || params.get("survey");
+    if (tokenParam) {
+      return resolveSurveyIdFromToken(tokenParam);
     }
-    // Check hash params if any (e.g. #/?survey=2)
-    if (window.location.hash.includes("survey=")) {
-      const match = window.location.hash.match(/survey=(\d+)/i);
+    if (window.location.hash) {
+      const match = window.location.hash.match(/[?&](?:s|survey)=([a-z0-9]+)/i);
       if (match && match[1]) {
-        const num = parseInt(match[1], 10);
-        if (!isNaN(num) && num >= 1) return num;
+        return resolveSurveyIdFromToken(match[1]);
       }
     }
   } catch (e) {}
@@ -187,10 +235,11 @@ export function getActiveSurveyIdFromUrl(): number {
 }
 
 /**
- * Builds the shareable public link for a specific survey (?survey=1, ?survey=2...)
+ * Builds the shareable public link for a specific survey using its non-sequential token (/?s=k8m2x9)
  */
 export function getSurveyPublicUrl(surveyId: number): string {
-  if (typeof window === "undefined") return `/?survey=${surveyId}`;
+  const token = getSurveyToken(surveyId);
+  if (typeof window === "undefined") return `/?s=${token}`;
   const cleanPath = window.location.pathname.replace(/\/admin\/?$/i, "").replace(/\/$/, "");
-  return `${window.location.origin}${cleanPath}/?survey=${surveyId}`;
+  return `${window.location.origin}${cleanPath}/?s=${token}`;
 }

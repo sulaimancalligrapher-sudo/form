@@ -2,8 +2,6 @@ import React, { useState, useEffect, useRef } from "react";
 import { FormLang, RegistrationQuestion, TelegramConfig } from "../types";
 import { UI_TRANSLATIONS } from "../data/defaultConfig";
 import { GOOGLE_APPS_SCRIPT_CODE } from "../data/appsScriptCode";
-import { TranslationSettingsTab } from "./TranslationSettingsTab";
-import { AnalysisSettingsTab } from "./AnalysisSettingsTab";
 import {
   getHeaderLogoUrl,
   saveHeaderLogoUrl,
@@ -71,7 +69,7 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
   onTranslationsUpdated,
   onSave
 }) => {
-  const [activeTab, setActiveTab] = useState<"settings" | "analysis" | "translations" | "code" | "deploy">("settings");
+  const [activeTab, setActiveTab] = useState<"settings" | "code" | "deploy">("settings");
   const [sheetId, setSheetId] = useState(initialSpreadsheetId);
   const [scriptUrl, setScriptUrl] = useState(initialScriptUrl);
   const [driveFolderId, setDriveFolderId] = useState(initialDriveFolderId);
@@ -210,10 +208,10 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
             </div>
             <div>
               <h3 className="font-bold text-slate-900 text-base">
-                إعدادات الاستمارة والشيت ودليل الرفع
+                إعدادات الربط السحابي والشيت ودليل النشر
               </h3>
               <p className="text-xs text-slate-500">
-                إدارة الشعار، الربط السحابي، كود البرمجة والترجمات
+                إدارة الشعار، الربط مع Google Sheets، كود Apps Script ودليل النشر
               </p>
             </div>
           </div>
@@ -238,28 +236,6 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
             }`}
           >
             ⚙️ إعدادات الربط والشيت
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("analysis")}
-            className={`py-3 px-3 text-xs sm:text-sm font-bold border-b-2 whitespace-nowrap transition-all ${
-              activeTab === "analysis"
-                ? "border-emerald-600 text-emerald-700"
-                : "border-transparent text-slate-500 hover:text-slate-800"
-            }`}
-          >
-            🧠 إعدادات التحليل والمشتركين
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("translations")}
-            className={`py-3 px-3 text-xs sm:text-sm font-bold border-b-2 whitespace-nowrap transition-all ${
-              activeTab === "translations"
-                ? "border-emerald-600 text-emerald-700"
-                : "border-transparent text-slate-500 hover:text-slate-800"
-            }`}
-          >
-            🌐 إعدادات الترجمة والنصوص
           </button>
           <button
             type="button"
@@ -467,15 +443,10 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
                 </div>
 
                 <div className="flex items-center justify-between text-[11px] pt-1 text-slate-500 border-t border-slate-200">
-                  <span>لترجمة نصوص الشريط العلوي وبطاقة الترحيب إلى الإنجليزية والتايلاندية:</span>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("translations")}
-                    className="font-bold text-emerald-700 hover:underline flex items-center gap-1"
-                  >
-                    <span>فتح تبويب الترجمات والنصوص</span>
-                    <Globe className="w-3 h-3" />
-                  </button>
+                  <span className="flex items-center gap-1.5">
+                    <Globe className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    <span>ملاحظة: إدارة الأسئلة والترجمة الكاملة وإعدادات التحليل الذكي مدمجة الآن مباشرة داخل كل استبيان في قسم «إدارة الاستبيانات».</span>
+                  </span>
                 </div>
               </div>
 
@@ -753,20 +724,6 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
                 )}
               </div>
             </div>
-          )}
-
-          {/* TAB: Analysis & Subscribers Gate Settings */}
-          {activeTab === "analysis" && (
-            <AnalysisSettingsTab darkMode={false} />
-          )}
-
-          {/* TAB: Translations Settings */}
-          {activeTab === "translations" && (
-            <TranslationSettingsTab
-              questions={questions}
-              currentLang={currentLang}
-              onTranslationsUpdated={onTranslationsUpdated || (() => {})}
-            />
           )}
 
           {/* TAB 2: Google Apps Script Code */}

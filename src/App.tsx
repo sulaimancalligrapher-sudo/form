@@ -56,6 +56,7 @@ import { analyzeSubscriberAnswers, getAnalysisSettings } from "./utils/aiAnalyze
 import {
   getActiveSurveyIdFromUrl,
   getSurveyById,
+  getSurveyToken,
   getSheetNamesForSurvey
 } from "./utils/surveyManager";
 import {
@@ -168,7 +169,7 @@ export default function App() {
       setIsSuccess(false);
       if (typeof window !== "undefined") {
         const cleanPath = window.location.pathname.replace(/\/admin\/?$/i, "") || "/";
-        window.history.pushState(null, "", `${cleanPath}?survey=${targetSurveyId}`);
+        window.history.pushState(null, "", `${cleanPath}?s=${getSurveyToken(targetSurveyId)}`);
       }
     }
     setCurrentView("form");

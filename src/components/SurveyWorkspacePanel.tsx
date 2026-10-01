@@ -9,6 +9,7 @@ import {
   createNextSurvey,
   updateSurveyInfo,
   getSurveyPublicUrl,
+  getSurveyToken,
   getSheetNamesForSurvey
 } from "../utils/surveyManager";
 import {
@@ -375,7 +376,7 @@ export const SurveyWorkspacePanel: React.FC<SurveyWorkspacePanelProps> = ({
                     استبيان #{srv.id}
                   </span>
                   <span className="text-[10px] font-mono text-slate-400 dir-ltr">
-                    /?survey={srv.id}
+                    /?s={getSurveyToken(srv.id)}
                   </span>
                 </div>
                 <div className="font-bold text-xs sm:text-sm truncate w-full">
@@ -444,9 +445,9 @@ export const SurveyWorkspacePanel: React.FC<SurveyWorkspacePanelProps> = ({
               <div className="flex items-center justify-between text-[11px] text-slate-400 font-bold">
                 <span className="flex items-center gap-1.5 text-emerald-400">
                   <LinkIcon className="w-3.5 h-3.5" />
-                  <span>الرابط الخاص بالاستبيان #{activeSurveyId}:</span>
+                  <span>الرابط المشفر الخاص بالاستبيان #{activeSurveyId}:</span>
                 </span>
-                <span className="font-mono text-emerald-300">/?survey={activeSurveyId}</span>
+                <span className="font-mono text-emerald-300">/?s={getSurveyToken(activeSurveyId)}</span>
               </div>
               <div className="flex items-center gap-2">
                 <input
