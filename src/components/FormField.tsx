@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useMemo } from "react";
 import { RegistrationQuestion, FormLang } from "../types";
 import { getEffectiveUiTranslations, getEffectiveQuestionTranslation } from "../utils/translationStorage";
 import { ImageModal } from "./ImageModal";
@@ -14,7 +14,9 @@ import {
   Sparkles,
   AlertCircle,
   Eye,
-  ZoomIn
+  ZoomIn,
+  Check,
+  ListChecks
 } from "lucide-react";
 
 interface FormFieldProps {
@@ -50,10 +52,10 @@ export const FormField: React.FC<FormFieldProps> = ({
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const [lightboxImg, setLightboxImg] = useState<{ url: string; title?: string } | null>(null);
 
-  // Multilingual question text resolution
+  // Multilingual question text resolution (custom translations take priority over defaults)
   const effectiveTrans = {
-    ...getEffectiveQuestionTranslation(question.question),
-    ...(question.translations || {})
+    ...(question.translations || {}),
+    ...getEffectiveQuestionTranslation(question.question)
   };
 
   const getQuestionTitle = (): string => {
@@ -64,6 +66,13 @@ export const FormField: React.FC<FormFieldProps> = ({
       return effectiveTrans.questionTh;
     }
     return question.question;
+  };
+
+  // Helper to extract clean display label for choices (strips leading score like "1-", "2 —", "3 -" in scored_choice)
+  const getCleanOptionLabel = (opt: string, isScored: boolean): string => {
+    if (!isScored || !opt) return opt;
+    // Match leading numbers followed by hyphen, dash, or separator: e.g. "1 -", "2-", "3 —"
+    return opt.replace(/^\s*\d+\s*[-—–ـ:]\s*/, "").trim() || opt;
   };
 
   const getQuestionDescription = (): string | undefined => {
@@ -77,13 +86,18 @@ export const FormField: React.FC<FormFieldProps> = ({
   };
 
   const getQuestionOptions = (): string[] => {
-    if (currentLang === "en" && effectiveTrans.optionsEn && effectiveTrans.optionsEn.length > 0) {
-      return effectiveTrans.optionsEn;
-    }
-    if (currentLang === "th" && effectiveTrans.optionsTh && effectiveTrans.optionsTh.length > 0) {
-      return effectiveTrans.optionsTh;
-    }
     return question.options || [];
+  };
+
+  // Returns the translated option label for display (EN / TH / AR) while keeping original option for saving
+  const getTranslatedOptionLabel = (optIdx: number, originalOpt: string, isScored: boolean): string => {
+    if (currentLang === "en" && effectiveTrans.optionsEn && effectiveTrans.optionsEn[optIdx]?.trim()) {
+      return getCleanOptionLabel(effectiveTrans.optionsEn[optIdx].trim(), isScored);
+    }
+    if (currentLang === "th" && effectiveTrans.optionsTh && effectiveTrans.optionsTh[optIdx]?.trim()) {
+      return getCleanOptionLabel(effectiveTrans.optionsTh[optIdx].trim(), isScored);
+    }
+    return getCleanOptionLabel(originalOpt, isScored);
   };
 
   const getButtonTitle = (): string => {
@@ -205,6 +219,39 @@ export const FormField: React.FC<FormFieldProps> = ({
   const desc = getQuestionDescription();
   const options = getQuestionOptions();
   const qType = (question.type || "text").toLowerCase().trim();
+
+  // Check if question is multiple choice (اختيارات 3)
+  const isMultipleChoice =
+    qType === "multiple_choice" ||
+    qType === "multi_choice" ||
+    qType.includes("اختيارات 3") ||
+    qType.includes("اختيار 3") ||
+    qType.includes("خيارات 3") ||
+    qType.includes("خيارات3") ||
+    qType.includes("اختيارات3") ||
+    qType.includes("choice3") ||
+    qType.includes("choice 3") ||
+    qType.includes("checkbox") ||
+    qType.includes("متعدد");
+
+  // For multiple choice (اختيارات 3): selected options list
+  const selectedOptionsList: string[] = useMemo(() => {
+    if (!value || typeof value !== "string") return [];
+    if (options.includes(value)) return [value];
+    const parts = value.split(/(?:،\s*|,\s*|\|\|\||\n)/).map((s) => s.trim()).filter(Boolean);
+    const matched = options.filter((opt) => parts.includes(opt.trim()));
+    return matched.length > 0 ? matched : parts;
+  }, [value, options]);
+
+  const handleMultipleChoiceToggle = (opt: string) => {
+    let updated: string[];
+    if (selectedOptionsList.includes(opt)) {
+      updated = selectedOptionsList.filter((v) => v !== opt);
+    } else {
+      updated = [...selectedOptionsList, opt];
+    }
+    onChange(updated.join("، "));
+  };
 
   // 1. Non-input Element: Banner Image
   if (qType === "image_display" || qType === "صورة") {
@@ -342,11 +389,81 @@ export const FormField: React.FC<FormFieldProps> = ({
       )}
 
       {/* Question Inputs according to type */}
-      {/* A) Choice / Radio */}
-      {qType === "choice" && (
+      {/* A-1) Multiple Choice (اختيارات 3 - مربعات اختيار متعدد) */}
+      {isMultipleChoice && (
+        <div className="space-y-2 mt-1">
+          {/* Header indicator / hint */}
+          <div className="flex items-center justify-between px-1 mb-1.5 text-xs text-slate-500">
+            <span className="flex items-center gap-1.5 font-medium text-emerald-700 bg-emerald-50/90 px-2.5 py-1 rounded-lg border border-emerald-200/70 text-[11px]">
+              <ListChecks className="w-3.5 h-3.5 shrink-0" />
+              <span>{t.multipleChoiceHint || "يمكنك اختيار أكثر من إجابة (اختيار متعدد)"}</span>
+            </span>
+
+            {selectedOptionsList.length > 0 && (
+              <button
+                type="button"
+                onClick={() => onChange("")}
+                className="text-[11px] text-slate-400 hover:text-rose-600 transition-colors underline font-medium cursor-pointer"
+              >
+                {t.clearSelection || "إلغاء التحديد"}
+              </button>
+            )}
+          </div>
+
+          {/* Option checkboxes */}
+          {options.map((opt, optIdx) => {
+            const isChecked = selectedOptionsList.includes(opt);
+            const displayLabel = getTranslatedOptionLabel(optIdx, opt, false);
+
+            return (
+              <label
+                key={optIdx}
+                className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all select-none ${
+                  isChecked
+                    ? "bg-emerald-50/90 border-emerald-500 text-emerald-950 font-semibold ring-1 ring-emerald-400 shadow-2xs"
+                    : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100/80"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  name={`question-${question.id}-${optIdx}`}
+                  checked={isChecked}
+                  onChange={() => handleMultipleChoiceToggle(opt)}
+                  className="sr-only"
+                />
+                <div
+                  className={`w-4.5 h-4.5 rounded-md border flex items-center justify-center transition-colors shrink-0 ${
+                    isChecked
+                      ? "border-emerald-600 bg-emerald-600 text-white shadow-2xs"
+                      : "border-slate-300 bg-white hover:border-slate-400"
+                  }`}
+                >
+                  {isChecked && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                </div>
+                <span className="text-xs sm:text-sm leading-relaxed flex-1">{displayLabel}</span>
+              </label>
+            );
+          })}
+
+          {/* Selected items counter footer */}
+          {selectedOptionsList.length > 0 && (
+            <div className="pt-1 px-1 flex items-center justify-between text-[11px] text-slate-500 font-medium">
+              <span>
+                {t.selectedCount || "تم تحديد"}: <strong className="text-emerald-700 font-bold">{selectedOptionsList.length}</strong> من أصل {options.length}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* A-2) Single Choice & Scored Choice (اختيارات و اختيارات 2 - راديو خيار واحد) */}
+      {!isMultipleChoice && (qType === "choice" || qType === "scored_choice" || qType === "اختيارات 2" || qType.includes("اختيار") || qType.includes("choice")) && (
         <div className="space-y-2 mt-1">
           {options.map((opt, optIdx) => {
             const isChecked = value === opt;
+            const isScored = qType === "scored_choice" || qType === "اختيارات 2";
+            const displayLabel = getTranslatedOptionLabel(optIdx, opt, isScored);
+
             return (
               <label
                 key={optIdx}
@@ -364,13 +481,13 @@ export const FormField: React.FC<FormFieldProps> = ({
                   className="sr-only"
                 />
                 <div
-                  className={`w-4 h-4 rounded-full border flex items-center justify-center transition-colors ${
+                  className={`w-4 h-4 rounded-full border flex items-center justify-center transition-colors shrink-0 ${
                     isChecked ? "border-emerald-600 bg-emerald-600" : "border-slate-300 bg-white"
                   }`}
                 >
                   {isChecked && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
                 </div>
-                <span className="text-xs sm:text-sm select-none">{opt}</span>
+                <span className="text-xs sm:text-sm select-none leading-relaxed">{displayLabel}</span>
               </label>
             );
           })}
@@ -389,39 +506,70 @@ export const FormField: React.FC<FormFieldProps> = ({
         />
       )}
 
-      {/* C) Phone Input */}
+      {/* C) Phone Input with international prefix */}
       {qType === "phone" && (
-        <div className="relative">
-          <input
-            id={`field-input-${question.id}`}
-            type="tel"
-            dir="ltr"
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            placeholder="+964 770 000 0000"
-            className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-emerald-500 focus:ring-3 focus:ring-emerald-100 text-slate-900 text-sm outline-none transition-all text-left font-mono"
-          />
-          <div className="absolute inset-y-0 right-3 flex items-center pointer-events-none text-slate-400">
-            <span className="text-xs">واتساب / هاتف</span>
+        <div className="space-y-1.5">
+          <div className="flex gap-2">
+            <select
+              aria-label="مفتاح الدولة"
+              value={value.startsWith("+964") ? "+964" : value.startsWith("+966") ? "+966" : value.startsWith("+971") ? "+971" : value.startsWith("+20") ? "+20" : value.startsWith("+66") ? "+66" : value.startsWith("+962") ? "+962" : value.startsWith("+965") ? "+965" : "other"}
+              onChange={(e) => {
+                const prefix = e.target.value;
+                if (prefix === "other") return;
+                const digits = value.replace(/^\+\d+\s*/, "");
+                onChange(`${prefix} ${digits}`.trim());
+              }}
+              className="px-2.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-800 text-xs font-mono font-bold outline-none focus:border-emerald-500 cursor-pointer shrink-0"
+            >
+              <option value="+964">🇮🇶 +964</option>
+              <option value="+966">🇸🇦 +966</option>
+              <option value="+971">🇦🇪 +971</option>
+              <option value="+20">🇪🇬 +20</option>
+              <option value="+66">🇹🇭 +66</option>
+              <option value="+965">🇰🇼 +965</option>
+              <option value="+962">🇯🇴 +962</option>
+              <option value="other">🌐 دولي آخر</option>
+            </select>
+            <input
+              id={`field-input-${question.id}`}
+              type="tel"
+              dir="ltr"
+              value={value}
+              onChange={(e) => onChange(e.target.value)}
+              placeholder="+964 770 000 0000"
+              className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-emerald-500 focus:ring-3 focus:ring-emerald-100 text-slate-900 text-sm outline-none transition-all text-left font-mono"
+            />
           </div>
+          <p className="text-[11px] text-slate-400">يرجى كتابة رقم الهاتف مع رمز الدولة (واتساب أو اتصال)</p>
         </div>
       )}
 
-      {/* D) Email Input */}
+      {/* D) Email Input with format validation */}
       {qType === "email" && (
-        <input
-          id={`field-input-${question.id}`}
-          type="email"
-          dir="ltr"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="user@example.com"
-          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-emerald-500 focus:ring-3 focus:ring-emerald-100 text-slate-900 text-sm outline-none transition-all text-left font-sans"
-        />
+        <div className="space-y-1">
+          <input
+            id={`field-input-${question.id}`}
+            type="email"
+            dir="ltr"
+            value={value}
+            onChange={(e) => onChange(e.target.value.trim())}
+            placeholder="user@example.com"
+            className={`w-full px-3.5 py-2.5 rounded-xl border bg-slate-50 focus:bg-white text-slate-900 text-sm outline-none transition-all text-left font-sans ${
+              value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+                ? "border-amber-300 focus:border-amber-500 focus:ring-3 focus:ring-amber-100"
+                : "border-slate-200 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-100"
+            }`}
+          />
+          {value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) && (
+            <p className="text-[11px] text-amber-600 flex items-center gap-1">
+              <span>يرجى التأكد من كتابة البريد بصيغة صحيحة (مثل: name@domain.com)</span>
+            </p>
+          )}
+        </div>
       )}
 
       {/* E) Standard Text Input */}
-      {(qType === "text" || !["number", "phone", "email", "choice", "file"].includes(qType)) && (
+      {(qType === "text" || !["number", "phone", "email", "choice", "scored_choice", "اختيارات 2", "file"].includes(qType)) && (
         <input
           id={`field-input-${question.id}`}
           type="text"

@@ -45,8 +45,27 @@ const FORM_TERMS_DICTIONARY: Record<string, { en: string; th: string }> = {
   "مبتدئ": { en: "Beginner", th: "ระดับเริ่มต้น" },
   "متوسط": { en: "Intermediate", th: "ระดับปานกลาง" },
   "متقدم": { en: "Advanced", th: "ระดับสูง" },
-  "نعم": { en: "Yes", th: "ใช่ / เคย" },
-  "لا": { en: "No", th: "ไม่ / ไม่เคย" },
+  "نعم": { en: "Yes", th: "ใช่" },
+  "لا": { en: "No", th: "ไม่" },
+  "✅ نعم = قط": { en: "✅ Yes = Ever", th: "✅ ใช่ = เคย" },
+  "❌ لا = ابدا": { en: "❌ No = Never", th: "❌ ไม่ = ไม่เคย" },
+  "✅ نعم": { en: "✅ Yes", th: "✅ ใช่" },
+  "❌ لا": { en: "❌ No", th: "❌ ไม่" },
+  "ذكر": { en: "Male", th: "ชาย" },
+  "أنثى": { en: "Female", th: "หญิง" },
+  "انثى": { en: "Female", th: "หญิง" },
+  "خط الرقعة": { en: "Ruq'ah Script", th: "อักษรริกอะห์ (Ruq'ah)" },
+  "خط النسخ": { en: "Naskh Script", th: "อักษรนัสคี (Naskh)" },
+  "خط الثلث": { en: "Thuluth Script", th: "อักษรซุลุษ (Thuluth)" },
+  "الخط الديواني": { en: "Diwani Script", th: "อักษรดีวานี (Diwani)" },
+  "الخط الكوفي": { en: "Kufic Script", th: "อักษรคูฟี (Kufic)" },
+  "الخط الفارسي": { en: "Persian / Ta'liq Script", th: "อักษรฟารซี (Persian)" },
+  "ممتاز": { en: "Excellent", th: "ดีเยี่ยม" },
+  "جيد جدا": { en: "Very Good", th: "ดีมาก" },
+  "جيد جداً": { en: "Very Good", th: "ดีมาก" },
+  "جيد": { en: "Good", th: "ดี" },
+  "مقبول": { en: "Fair", th: "พอใช้" },
+  "ضعيف": { en: "Weak", th: "อ่อน" },
   "ملاحظات إضافية": { en: "Additional Notes", th: "หมายเหตุเพิ่มเติม" },
   "المرفقات": { en: "Attachments", th: "ไฟล์แนบ" },
   "صورة": { en: "Photo / Image", th: "รูปภาพ" },
@@ -89,14 +108,31 @@ export async function translateWithAi(
     return "";
   }
 
-  const trimmedText = text.trim();
+  const rawTrimmed = text.trim();
   const isThai = targetLang === "th";
 
+  // Check if text has a leading score prefix like "1 - مبتدئ" or "2-متوسط"
+  let scorePrefix = "";
+  let trimmedText = rawTrimmed;
+  const prefixMatch = rawTrimmed.match(/^(\d+(?:\.\d+)?\s*[-—–ـ:]\s*)(.+)$/);
+  if (prefixMatch && prefixMatch[1] && prefixMatch[2]) {
+    scorePrefix = prefixMatch[1];
+    trimmedText = prefixMatch[2].trim();
+  }
+
+  const withPrefix = (val: string) => (scorePrefix ? `${scorePrefix}${val}` : val);
+
   // 1. Instant Exact Dictionary Match
-  const exact = FORM_TERMS_DICTIONARY[trimmedText];
-  if (exact) {
-    const res = isThai ? exact.th : exact.en;
+  const exactFull = FORM_TERMS_DICTIONARY[rawTrimmed];
+  if (exactFull) {
+    const res = isThai ? exactFull.th : exactFull.en;
     if (res) return res;
+  }
+
+  const exactCore = FORM_TERMS_DICTIONARY[trimmedText];
+  if (exactCore) {
+    const res = isThai ? exactCore.th : exactCore.en;
+    if (res) return withPrefix(res);
   }
 
   // 2. Try Server /api/translate endpoint if available
@@ -118,7 +154,7 @@ export async function translateWithAi(
         const trans = data.translation.trim();
         // If target is Thai, ensure it has Thai characters or fallback
         if (!isThai || /[\u0E00-\u0E7F]/.test(trans)) {
-          return trans;
+          return withPrefix(trans);
         }
       }
     }
@@ -126,7 +162,32 @@ export async function translateWithAi(
     // /api/translate not available or timed out, continue to client fallbacks
   }
 
-  // 3. Try Direct Google Apps Script backend if it has translate action
+  // 3. Try Google Translate free GTX endpoint (ultra-fast, supports English and Thai script natively)
+  try {
+    const gtxUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=ar&tl=${targetLang}&dt=t&q=${encodeURIComponent(trimmedText)}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+    const gtxRes = await fetch(gtxUrl, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (gtxRes.ok) {
+      const gtxData = await gtxRes.json();
+      if (Array.isArray(gtxData) && Array.isArray(gtxData[0])) {
+        const combined = gtxData[0]
+          .map((seg: any) => (Array.isArray(seg) && seg[0] ? String(seg[0]) : ""))
+          .join("")
+          .trim();
+        if (combined) {
+          return withPrefix(combined);
+        }
+      }
+    }
+  } catch (e) {
+    // Continue to next fallback
+  }
+
+  // 4. Try Direct Google Apps Script backend if it has translate action
   const scriptUrl = getActiveScriptUrl();
   if (scriptUrl && scriptUrl.startsWith("http")) {
     try {
@@ -140,7 +201,7 @@ export async function translateWithAi(
       if (gasRes.ok) {
         const gasData = await gasRes.json();
         if (gasData && gasData.success && gasData.translation) {
-          return gasData.translation.trim();
+          return withPrefix(gasData.translation.trim());
         }
       }
     } catch (e) {
@@ -148,7 +209,7 @@ export async function translateWithAi(
     }
   }
 
-  // 4. Try Free Public MyMemory Translation (client-side, works everywhere without keys)
+  // 5. Try Free Public MyMemory Translation (client-side, works everywhere without keys)
   try {
     const myMemoryUrl = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(trimmedText)}&langpair=ar|${targetLang === "th" ? "th-TH" : "en-US"}`;
     const controller = new AbortController();
@@ -163,7 +224,7 @@ export async function translateWithAi(
       if (translated && typeof translated === "string" && translated.trim()) {
         const clean = translated.trim().replace(/^["']|["']$/g, "");
         if (!clean.includes("MYMEMORY WARNING")) {
-          return clean;
+          return withPrefix(clean);
         }
       }
     }
@@ -171,14 +232,14 @@ export async function translateWithAi(
     // Continue to dictionary partial
   }
 
-  // 5. Partial Dictionary Matching
+  // 6. Partial Dictionary Matching
   for (const [key, val] of Object.entries(FORM_TERMS_DICTIONARY)) {
     if (trimmedText.includes(key) || key.includes(trimmedText)) {
       const matchVal = isThai ? val.th : val.en;
-      if (matchVal) return matchVal;
+      if (matchVal) return withPrefix(matchVal);
     }
   }
 
-  // 6. Echo back if all else fails
-  return trimmedText;
+  // 7. Echo back if all else fails
+  return rawTrimmed;
 }

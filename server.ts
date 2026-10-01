@@ -193,13 +193,13 @@ app.post("/api/register", async (req, res) => {
       payload.scriptUrl ||
       process.env.VITE_GOOGLE_SCRIPT_URL ||
       process.env.GOOGLE_SCRIPT_URL ||
-      "https://script.google.com/macros/s/AKfycbwxn8Q7W9DbAufsdZXx_57s7qf3hM2B4EeSugqDzWc13D62U28kvUkn9yZSwH2il5dBoQ/exec";
+      "https://script.google.com/macros/s/AKfycbwO6_PHYlPNgCzyDv2waJVm33D49qXTwl_ds2jkHdWXz3cgvwzdUMdNNq5x98H4aZJw/exec";
 
     const gasResponse = await fetch(scriptUrl, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify({
-        action: "submitRegistration",
+        action: payload.action || "submitRegistration",
         ...payload
       })
     });

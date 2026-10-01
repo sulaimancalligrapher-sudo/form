@@ -106,6 +106,8 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
     message?: string;
     title?: string;
   }>({ tested: false });
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<{ success: boolean; message: string; headers?: string[] } | null>(null);
 
   // Keep state in sync with updated props
   useEffect(() => {
@@ -662,8 +664,8 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
           {/* TAB 2: Google Apps Script Code */}
           {activeTab === "code" && (
             <div className="space-y-4">
-              <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-xs text-amber-900 leading-relaxed">
-                <p className="font-bold mb-1">📌 كيف تضع هذا الكود في قوقل شيت؟</p>
+              <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-xs text-amber-900 leading-relaxed space-y-2">
+                <p className="font-bold">📌 كيف تضع هذا الكود في قوقل شيت؟</p>
                 <ol className="list-decimal list-inside space-y-1 text-[11px] text-amber-800">
                   <li>افتح جدول قوقل شيت (Google Sheets) الذي ترغب في استقبال التسجيلات فيه.</li>
                   <li>من القائمة العلوية اختر: <strong>الإضافات (Extensions)</strong> ثم <strong>تطبيقات سكريبت (Apps Script)</strong>.</li>
@@ -672,6 +674,26 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
                   <li>اختر النوع <strong>Web app</strong> واجعل الصلاحية (Who has access) هي: <strong>Anyone (أي شخص)</strong>.</li>
                   <li>انسخ رابط الـ Web App وضعه في خانة <strong>رابط تطبيق الويب</strong> في تبويب الإعدادات!</li>
                 </ol>
+                <div className="pt-2 border-t border-amber-200/80 text-[11px] text-amber-900 font-medium leading-relaxed space-y-2">
+                  <div>
+                    💡 <strong>ميزة (اختيارات 2) واستبيانات النقاط:</strong>
+                    <br />
+                    • في ورقة <code>RegistrationQuestions</code> بالعمود C اكتب: <strong>اختيارات 2</strong>
+                    <br />
+                    • في العمود D اكتب الخيارات بهذا النمط: <code>1-نص الخيار الأول|||2-نص الخيار الثاني|||3-نص الخيار الثالث|||4-نص الخيار الرابع</code>
+                    <br />
+                    • في الفورم: يظهر للمشترك النص فقط بدون الرقم، وعند الإرسال يقوم الكود بحساب <strong>مجموع النقاط</strong> تلقائياً وإضافته في العمود الأخير بجدول الإجابات!
+                  </div>
+                  <div className="pt-1.5 border-t border-amber-200/60">
+                    ☑️ <strong>ميزة (اختيارات 3) - الاختيار المتعدد (Checkboxes):</strong>
+                    <br />
+                    • في ورقة <code>RegistrationQuestions</code> بالعمود C اكتب: <strong>اختيارات 3</strong>
+                    <br />
+                    • في العمود D اكتب الخيارات مفصولة بالعلامة <code>|||</code> أو أسطر جديدة (مثال: <code>النسخ|||الثلث|||الرقعة|||الديواني</code>).
+                    <br />
+                    • في الفورم: يمكن للمشترك اختيار خيار واحد، خيارين، أو تحديد الكل بحرية، ويتم تسجيل جميع الخيارات المختارة في ورقة <code>RegistrationAnswers</code> بينها فاصلة (مثال: <code>النسخ، الثلث</code>).
+                  </div>
+                </div>
               </div>
 
               <div className="flex items-center justify-between">

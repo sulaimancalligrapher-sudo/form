@@ -138,13 +138,43 @@ export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
     const trimmed = questionText.trim();
     setQuestionTranslations((prev) => {
       const existing = prev[trimmed] || getEffectiveQuestionTranslation(trimmed);
-      return {
+      const next = {
         ...prev,
         [trimmed]: {
           ...existing,
           [field]: val
         }
       };
+      saveCustomQuestionTranslations(next);
+      return next;
+    });
+  };
+
+  // Update a single option's translation at a specific index (manual or AI)
+  const handleUpdateOptionTranslation = (
+    questionText: string,
+    langField: "optionsEn" | "optionsTh",
+    optIdx: number,
+    originalOptions: string[],
+    newVal: string
+  ) => {
+    const trimmed = questionText.trim();
+    setQuestionTranslations((prev) => {
+      const existing = prev[trimmed] || getEffectiveQuestionTranslation(trimmed);
+      const currentArr = existing[langField] ? [...existing[langField]!] : [];
+      while (currentArr.length < originalOptions.length) {
+        currentArr.push("");
+      }
+      currentArr[optIdx] = newVal;
+      const next = {
+        ...prev,
+        [trimmed]: {
+          ...existing,
+          [langField]: currentArr
+        }
+      };
+      saveCustomQuestionTranslations(next);
+      return next;
     });
   };
 
@@ -156,13 +186,15 @@ export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
     const trimmed = questionText.trim();
     setQuestionTranslations((prev) => {
       const existing = prev[trimmed] || getEffectiveQuestionTranslation(trimmed);
-      return {
+      const next = {
         ...prev,
         [trimmed]: {
           ...existing,
           ...updates
         }
       };
+      saveCustomQuestionTranslations(next);
+      return next;
     });
   };
 
@@ -206,7 +238,46 @@ export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
     }
   };
 
-  // AI translate an entire question (Title + Description + Button to EN & TH) with atomic state commit
+  // Helper: Clean option text before AI translation (strips leading score prefix like "1 - ")
+  const getCleanOptionForAi = (rawOpt: string): string => {
+    if (!rawOpt) return "";
+    return rawOpt.replace(/^\s*\d+\s*[-—–ـ:]\s*/, "").trim() || rawOpt.trim();
+  };
+
+  // AI translate all options of a single question to EN & TH
+  const handleAiTranslateQuestionOptions = async (q: RegistrationQuestion) => {
+    if (!q.options || q.options.length === 0) return;
+    const qKey = q.question.trim();
+    setTranslatingKeys((prev) => ({ ...prev, [`opts_all_${qKey}`]: true }));
+
+    try {
+      const optionsEn: string[] = [];
+      const optionsTh: string[] = [];
+
+      for (let i = 0; i < q.options.length; i++) {
+        const cleanSource = getCleanOptionForAi(q.options[i]);
+        const [trEn, trTh] = await Promise.all([
+          translateWithAi(cleanSource, "en", "Form choice option").catch(() => cleanSource),
+          translateWithAi(cleanSource, "th", "Form choice option").catch(() => cleanSource)
+        ]);
+        optionsEn.push(trEn || cleanSource);
+        optionsTh.push(trTh || cleanSource);
+      }
+
+      handleUpdateQuestionTranslationBatch(q.question, {
+        optionsEn,
+        optionsTh
+      });
+      onTranslationsUpdated();
+      showNotification(`✅ تمت ترجمة جميع خيارات السؤال (${q.options.length} خيارات) إلى الإنجليزية والتايلاندية!`);
+    } catch (err: any) {
+      showNotification(`⚠️ تعذر ترجمة الخيارات: ${err.message || "تحقق من الاتصال"}`);
+    } finally {
+      setTranslatingKeys((prev) => ({ ...prev, [`opts_all_${qKey}`]: false }));
+    }
+  };
+
+  // AI translate an entire question (Title + Description + Options + Button to EN & TH) with atomic state commit
   const handleAiTranslateWholeQuestion = async (q: RegistrationQuestion) => {
     const qKey = q.question.trim();
     setTranslatingKeys((prev) => ({ ...prev, [`all_${qKey}`]: true }));
@@ -232,7 +303,24 @@ export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
         if (descTh) updates.descriptionTh = descTh;
       }
 
-      // 3. Button label if applicable
+      // 3. Question Options (Column D) to EN & TH if present
+      if (q.options && q.options.length > 0) {
+        const optionsEn: string[] = [];
+        const optionsTh: string[] = [];
+        for (let i = 0; i < q.options.length; i++) {
+          const cleanOpt = getCleanOptionForAi(q.options[i]);
+          const [optEn, optTh] = await Promise.all([
+            translateWithAi(cleanOpt, "en", "Form choice option").catch(() => cleanOpt),
+            translateWithAi(cleanOpt, "th", "Form choice option").catch(() => cleanOpt)
+          ]);
+          optionsEn.push(optEn || cleanOpt);
+          optionsTh.push(optTh || cleanOpt);
+        }
+        updates.optionsEn = optionsEn;
+        updates.optionsTh = optionsTh;
+      }
+
+      // 4. Button label if applicable
       const isButtonType = q.type === "button_title" || q.type === "عنوان زر";
       if (isButtonType && q.buttonTitle) {
         const [btnEn, btnTh] = await Promise.all([
@@ -244,7 +332,8 @@ export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
       }
 
       handleUpdateQuestionTranslationBatch(q.question, updates);
-      showNotification(`✨ تمت ترجمة سؤال "${q.question}" بالكامل بالذكاء الاصطناعي (English + ภาษาไทย)!`);
+      onTranslationsUpdated();
+      showNotification(`✨ تمت ترجمة سؤال "${q.question}" وخياراته بالكامل بالذكاء الاصطناعي (English + ภาษาไทย)!`);
     } catch (err: any) {
       showNotification(`⚠️ حدث خطأ أثناء الترجمة: ${err.message || "تحقق من الاتصال"}`);
     } finally {
@@ -287,13 +376,11 @@ export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
 
   // Reset to defaults
   const handleReset = () => {
-    if (window.confirm("هل أنت متأكد من استعادة جميع الترجمات والنصوص إلى حالتها الافتراضية؟")) {
-      resetAllTranslationsToDefaults();
-      setQuestionTranslations({});
-      setUiTranslations({ ar: {}, en: {}, th: {} });
-      onTranslationsUpdated();
-      showNotification("تمت استعادة الترجمات والنصوص الافتراضية بنجاح.");
-    }
+    resetAllTranslationsToDefaults();
+    setQuestionTranslations({});
+    setUiTranslations({ ar: {}, en: {}, th: {} });
+    onTranslationsUpdated();
+    showNotification("تمت استعادة الترجمات والنصوص الافتراضية بنجاح.");
   };
 
   // Filtered questions
@@ -504,10 +591,14 @@ export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
               const valDescTh = customForQ.descriptionTh !== undefined ? customForQ.descriptionTh : (eff.descriptionTh || "");
               const valBtnEn = customForQ.buttonTitleEn !== undefined ? customForQ.buttonTitleEn : (eff.buttonTitleEn || "");
               const valBtnTh = customForQ.buttonTitleTh !== undefined ? customForQ.buttonTitleTh : (eff.buttonTitleTh || "");
+              const valOptionsEn = customForQ.optionsEn !== undefined ? customForQ.optionsEn : (eff.optionsEn || []);
+              const valOptionsTh = customForQ.optionsTh !== undefined ? customForQ.optionsTh : (eff.optionsTh || []);
 
               const isButtonType = q.type === "button_title" || q.type === "عنوان زر";
+              const hasOptions = Array.isArray(q.options) && q.options.length > 0;
               const qKey = q.question.trim();
               const isTranslatingAll = translatingKeys[`all_${qKey}`];
+              const isTranslatingOpts = translatingKeys[`opts_all_${qKey}`];
 
               return (
                 <div
@@ -536,6 +627,11 @@ export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200/80 text-slate-700 font-mono">
                             {q.type}
                           </span>
+                          {hasOptions && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold border border-emerald-200">
+                              {q.options!.length} خيارات
+                            </span>
+                          )}
                         </div>
                         {q.description && (
                           <p className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">
@@ -868,6 +964,183 @@ export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
                           </div>
                         )}
                       </div>
+
+                      {/* 3. Options Translation Section (ترجمة الخيارات المتاحة - يدوي + ذكاء اصطناعي) */}
+                      {hasOptions && (
+                        <div className="p-3.5 bg-emerald-50/50 border border-emerald-200/90 rounded-xl space-y-3">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-emerald-200/70 pb-2.5">
+                            <div>
+                              <h6 className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
+                                <Layers className="w-4 h-4 text-emerald-700" />
+                                <span>ترجمة الخيارات المتاحة (العمود D) — {q.options!.length} خيارات:</span>
+                              </h6>
+                              <p className="text-[11px] text-emerald-800/80 mt-0.5">
+                                يرى المشترك الخيارات مترجمة بلغته، بينما تُسجَّل الإجابة في قوقل شيت باللغة العربية الأصلية.
+                              </p>
+                            </div>
+
+                            <button
+                              type="button"
+                              disabled={isTranslatingOpts || isTranslatingAll}
+                              onClick={() => handleAiTranslateQuestionOptions(q)}
+                              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold shadow-2xs transition-colors disabled:opacity-50 shrink-0 cursor-pointer"
+                            >
+                              {isTranslatingOpts ? (
+                                <>
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  <span>جاري ترجمة الخيارات...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Sparkles className="w-3.5 h-3.5 text-amber-200" />
+                                  <span>ترجمة جميع الخيارات AI (EN + TH)</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+
+                          <div className="space-y-2.5">
+                            {q.options!.map((origOpt, optIdx) => {
+                              const optEnVal = valOptionsEn[optIdx] || "";
+                              const optThVal = valOptionsTh[optIdx] || "";
+                              const cleanOrigOpt = getCleanOptionForAi(origOpt);
+                              const trackEnKey = `opt_en_${qKey}_${optIdx}`;
+                              const trackThKey = `opt_th_${qKey}_${optIdx}`;
+
+                              return (
+                                <div
+                                  key={optIdx}
+                                  className="p-2.5 rounded-xl bg-white border border-emerald-200/80 shadow-2xs space-y-2"
+                                >
+                                  {/* Original Arabic Option Header */}
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2">
+                                      <span className="w-5 h-5 rounded-md bg-emerald-100 text-emerald-800 text-[11px] font-bold flex items-center justify-center font-mono">
+                                        {optIdx + 1}
+                                      </span>
+                                      <span className="text-xs font-bold text-slate-900">
+                                        الخيار الأصلي (عربي): <span className="text-emerald-700">{origOpt}</span>
+                                      </span>
+                                    </div>
+                                    <span className="text-[10px] text-slate-400 bg-slate-100 px-2 py-0.5 rounded">
+                                      يُسجل في الشيت: {origOpt}
+                                    </span>
+                                  </div>
+
+                                  {/* English & Thai Option Inputs */}
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                    {/* Option English */}
+                                    <div>
+                                      <div className="flex items-center justify-between mb-1">
+                                        <label className="text-[10px] font-bold text-blue-800">
+                                          🇬🇧 الخيار بالإنجليزية (English)
+                                        </label>
+                                        <button
+                                          type="button"
+                                          disabled={translatingKeys[trackEnKey]}
+                                          onClick={() =>
+                                            handleAiTranslateSingle(
+                                              cleanOrigOpt,
+                                              "en",
+                                              trackEnKey,
+                                              (val) =>
+                                                handleUpdateOptionTranslation(
+                                                  q.question,
+                                                  "optionsEn",
+                                                  optIdx,
+                                                  q.options!,
+                                                  val
+                                                ),
+                                              "Form choice option"
+                                            )
+                                          }
+                                          className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-600 hover:text-blue-800 bg-blue-50 px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                        >
+                                          {translatingKeys[trackEnKey] ? (
+                                            <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                                          ) : (
+                                            <Sparkles className="w-2.5 h-2.5" />
+                                          )}
+                                          <span>ترجمة AI</span>
+                                        </button>
+                                      </div>
+                                      <input
+                                        type="text"
+                                        dir="ltr"
+                                        value={optEnVal}
+                                        onChange={(e) =>
+                                          handleUpdateOptionTranslation(
+                                            q.question,
+                                            "optionsEn",
+                                            optIdx,
+                                            q.options!,
+                                            e.target.value
+                                          )
+                                        }
+                                        placeholder={`English translation for "${cleanOrigOpt}"...`}
+                                        className="w-full text-xs px-2.5 py-1.5 bg-blue-50/20 border border-blue-200 rounded-lg focus:outline-none focus:border-blue-500 focus:bg-white"
+                                      />
+                                    </div>
+
+                                    {/* Option Thai */}
+                                    <div>
+                                      <div className="flex items-center justify-between mb-1">
+                                        <label className="text-[10px] font-bold text-amber-900">
+                                          🇹🇭 الخيار بالتايلاندية (ภาษาไทย)
+                                        </label>
+                                        <button
+                                          type="button"
+                                          disabled={translatingKeys[trackThKey]}
+                                          onClick={() =>
+                                            handleAiTranslateSingle(
+                                              cleanOrigOpt,
+                                              "th",
+                                              trackThKey,
+                                              (val) =>
+                                                handleUpdateOptionTranslation(
+                                                  q.question,
+                                                  "optionsTh",
+                                                  optIdx,
+                                                  q.options!,
+                                                  val
+                                                ),
+                                              "Form choice option"
+                                            )
+                                          }
+                                          className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-700 hover:text-amber-900 bg-amber-50 px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                                        >
+                                          {translatingKeys[trackThKey] ? (
+                                            <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                                          ) : (
+                                            <Sparkles className="w-2.5 h-2.5" />
+                                          )}
+                                          <span>ترجمة AI</span>
+                                        </button>
+                                      </div>
+                                      <input
+                                        type="text"
+                                        dir="ltr"
+                                        value={optThVal}
+                                        onChange={(e) =>
+                                          handleUpdateOptionTranslation(
+                                            q.question,
+                                            "optionsTh",
+                                            optIdx,
+                                            q.options!,
+                                            e.target.value
+                                          )
+                                        }
+                                        placeholder={`คำแปลภาษาไทยสำหรับ "${cleanOrigOpt}"...`}
+                                        className="w-full text-xs px-2.5 py-1.5 bg-amber-50/20 border border-amber-200 rounded-lg focus:outline-none focus:border-amber-500 focus:bg-white"
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

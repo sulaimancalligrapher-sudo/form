@@ -18,118 +18,11 @@ export const DEFAULT_TELEGRAM_CONFIG: TelegramConfig = {
 };
 
 /**
- * The full list of form questions extracted from the repository
+ * The clean list of form questions (Subscriber Name and ID are managed by the Subscriber Card)
  */
 export const DEFAULT_FORM_QUESTIONS: RegistrationQuestion[] = [
   {
     id: 1,
-    question: "الاسم",
-    description: "يرجى كتابة اسمك الكامل كما هو مدون في الهوية",
-    type: "text",
-    required: true,
-    translations: {
-      questionEn: "Full Name",
-      questionTh: "ชื่อ-นามสกุล",
-      descriptionEn: "Please write your full name as shown on your ID",
-      descriptionTh: "กรุณาระบุชื่อ-นามสกุลเต็มตามที่ปรากฏบนบัตรประจำตัว"
-    }
-  },
-  {
-    id: 2,
-    question: "الاسم بالعربي",
-    description: "اسمك الكريم باللغة العربية (إن وُجد)",
-    type: "text",
-    required: true,
-    translations: {
-      questionEn: "Name in Arabic",
-      questionTh: "ชื่อภาษาอาหรับ",
-      descriptionEn: "Your name in Arabic (if any)",
-      descriptionTh: "ชื่อของคุณเป็นภาษาอาหรับ (ถ้ามี)"
-    }
-  },
-  {
-    id: 3,
-    question: "العمر",
-    description: "العمر بالسنوات (أرقام فقط)",
-    type: "number",
-    required: true,
-    translations: {
-      questionEn: "Age",
-      questionTh: "อายุ",
-      descriptionEn: "Age in years (numbers only)",
-      descriptionTh: "อายุเป็นปี (ตัวเลขเท่านั้น)"
-    }
-  },
-  {
-    id: 4,
-    question: "رقم الهاتف",
-    description: "رقم الهاتف أو الواتساب مع مفتاح الدولة (مثال: +9647700000000)",
-    type: "phone",
-    required: true,
-    translations: {
-      questionEn: "Phone / WhatsApp Number",
-      questionTh: "หมายเลขโทรศัพท์ / WhatsApp",
-      descriptionEn: "Phone or WhatsApp number with international country code",
-      descriptionTh: "เบอร์โทรศัพท์หรือ WhatsApp พร้อมรหัสประเทศ"
-    }
-  },
-  {
-    id: 5,
-    question: "ايميل",
-    description: "بريدك الإلكتروني المعتمد لاستلام الإشعار ورمز التسجيل",
-    type: "email",
-    required: true,
-    translations: {
-      questionEn: "Email Address",
-      questionTh: "อีเมล",
-      descriptionEn: "Your approved email to receive notifications and confirmation",
-      descriptionTh: "อีเมลที่ใช้สำหรับรับการแจ้งเตือนและการยืนยัน"
-    }
-  },
-  {
-    id: 6,
-    question: "ID Line",
-    description: "معرف تطبيق لاين الخاص بك للتواصل السريع (اختياري)",
-    type: "text",
-    required: false,
-    translations: {
-      questionEn: "Line ID",
-      questionTh: "LINE ID",
-      descriptionEn: "Your Line ID for quick communication (optional)",
-      descriptionTh: "LINE ID ของคุณสำหรับการติดต่ออย่างรวดเร็ว (ถ้ามี)"
-    }
-  },
-  {
-    id: 7,
-    question: "افتح ملف بي دي اف",
-    description: "انقر للاطلاع على الدليل والشروط التوضيحية بصيغة PDF",
-    type: "button_title",
-    required: false,
-    externalLink: "https://drive.google.com/thumbnail?id=1wUPfYMrl3t6j0RPaw6Vk-WiqAaECbSNQ&sz=w1201",
-    translations: {
-      questionEn: "Open PDF Guide",
-      questionTh: "เปิดไฟล์คู่มือ PDF",
-      descriptionEn: "Click to open and review the PDF instructions",
-      descriptionTh: "คลิกเพื่อเปิดเอกสารคำแนะนำ PDF",
-      buttonTitleEn: "Open PDF Document",
-      buttonTitleTh: "เปิดดูเอกสาร PDF"
-    }
-  },
-  {
-    id: 8,
-    question: "فيس بوك",
-    description: "رابط أو اسم حسابك على فيسبوك (اختياري)",
-    type: "text",
-    required: false,
-    translations: {
-      questionEn: "Facebook Profile",
-      questionTh: "Facebook",
-      descriptionEn: "Link or name of your Facebook account (optional)",
-      descriptionTh: "ลิงก์หรือชื่อบัญชี Facebook ของคุณ (ถ้ามี)"
-    }
-  },
-  {
-    id: 9,
     question: "هل تحب الخط العربي؟",
     description: "اختر الإجابة المناسبة لتجربتك وشغفك بالخط",
     type: "choice",
@@ -140,7 +33,7 @@ export const DEFAULT_FORM_QUESTIONS: RegistrationQuestion[] = [
     required: true,
     translations: {
       questionEn: "Do you love Arabic calligraphy?",
-      questionTh: "คุณชอบศิลปะการเขียนตัวอักษรอาหรับหรือไม่?",
+      questionTh: "คุณชอบศิลปةการเขียนตัวอักษรอาหรับหรือไม่?",
       descriptionEn: "Choose the answer fitting your background and passion",
       descriptionTh: "เลือกคำตอบที่ตรงกับระดับความรู้และความสนใจของคุณ",
       optionsEn: [
@@ -154,7 +47,7 @@ export const DEFAULT_FORM_QUESTIONS: RegistrationQuestion[] = [
     }
   },
   {
-    id: 10,
+    id: 2,
     question: "ما اسم استاذك الذي علمك الخط؟",
     description: "اسم الخطاط أو المعلم الذي تعلمت على يديه (إن وُجد)",
     type: "text",
@@ -167,7 +60,7 @@ export const DEFAULT_FORM_QUESTIONS: RegistrationQuestion[] = [
     }
   },
   {
-    id: 11,
+    id: 3,
     question: "هل تعرفين انواع الخط",
     description: "معرفتك بأنواع الخطوط (النسخ، الثلث، الرقعة، الديواني...)",
     type: "choice",
@@ -192,7 +85,7 @@ export const DEFAULT_FORM_QUESTIONS: RegistrationQuestion[] = [
     }
   },
   {
-    id: 12,
+    id: 4,
     question: "هل تحب الفن",
     description: "اهتماماتك الفنية والإبداعية العامة",
     type: "text",
@@ -205,7 +98,7 @@ export const DEFAULT_FORM_QUESTIONS: RegistrationQuestion[] = [
     }
   },
   {
-    id: 13,
+    id: 5,
     question: "صورة",
     description: "صورة توضيحية لنموذج العمل الفني",
     type: "image_display",
@@ -219,7 +112,23 @@ export const DEFAULT_FORM_QUESTIONS: RegistrationQuestion[] = [
     }
   },
   {
-    id: 14,
+    id: 6,
+    question: "افتح ملف بي دي اف",
+    description: "انقر للاطلاع على الدليل والشروط التوضيحية بصيغة PDF",
+    type: "button_title",
+    required: false,
+    externalLink: "https://drive.google.com/thumbnail?id=1wUPfYMrl3t6j0RPaw6Vk-WiqAaECbSNQ&sz=w1201",
+    translations: {
+      questionEn: "Open PDF Guide",
+      questionTh: "เปิดไฟล์คู่มือ PDF",
+      descriptionEn: "Click to open and review the PDF instructions",
+      descriptionTh: "คลิกเพื่อเปิดเอกสารคำแนะนำ PDF",
+      buttonTitleEn: "Open PDF Document",
+      buttonTitleTh: "เปิดดูเอกสาร PDF"
+    }
+  },
+  {
+    id: 7,
     question: "رفع ملف",
     description: "يرجى إرفاق نموذج من أعمالك أو هويتك أو بطاقة الاشتراك (صورة، PDF، أو مستند)",
     type: "file",
@@ -246,6 +155,9 @@ export const UI_TRANSLATIONS: Record<FormLang, Record<string, string>> = {
     requiredBadge: "مطلوب",
     optionalBadge: "اختياري",
     selectOption: "اختر أحد الخيارات التالية:",
+    multipleChoiceHint: "يمكنك اختيار أكثر من إجابة (اختيار متعدد)",
+    selectedCount: "تم تحديد",
+    clearSelection: "إلغاء التحديد",
     uploadFilePrompt: "اسحب الملف وأفلته هنا، أو انقر للاختيار من جهازك",
     openCamera: "تصوير مباشر بالكاميرا",
     fileSizeLimit: "يدعم الصور، PDF ومستندات Word (الحد الأقصى: 15 ميجابايت)",
@@ -290,6 +202,9 @@ export const UI_TRANSLATIONS: Record<FormLang, Record<string, string>> = {
     requiredBadge: "Required",
     optionalBadge: "Optional",
     selectOption: "Choose one of the following options:",
+    multipleChoiceHint: "You can select one, multiple, or all options",
+    selectedCount: "Selected",
+    clearSelection: "Clear selection",
     uploadFilePrompt: "Drag & drop your file here, or click to browse",
     openCamera: "Take Photo with Camera",
     fileSizeLimit: "Supports Images, PDF & Documents (Max: 15MB)",
@@ -334,6 +249,9 @@ export const UI_TRANSLATIONS: Record<FormLang, Record<string, string>> = {
     requiredBadge: "จำเป็น",
     optionalBadge: "ไม่บังคับ",
     selectOption: "เลือกหนึ่งในตัวเลือกต่อไปนี้:",
+    multipleChoiceHint: "คุณสามารถเลือกได้หลายตัวเลือกหรือทั้งหมด (เลือกได้หลายข้อ)",
+    selectedCount: "เลือกแล้ว",
+    clearSelection: "ล้างตัวเลือก",
     uploadFilePrompt: "ลากและวางไฟล์ที่นี่ หรือคลิกเพื่อเลือกไฟล์",
     openCamera: "ถ่ายภาพด้วยกล้องสด",
     fileSizeLimit: "รองรับรูปภาพ, PDF และเอกสาร (สูงสุด 15MB)",

@@ -10,13 +10,15 @@ import {
   Globe,
   Sparkles,
   ExternalLink,
-  RefreshCw
+  RefreshCw,
+  ShieldCheck
 } from "lucide-react";
 
 interface FormHeaderProps {
   currentLang: FormLang;
   onLanguageChange: (lang: FormLang) => void;
   onOpenSettings: () => void;
+  onOpenAdmin?: () => void;
   onRefreshQuestions?: () => void;
   isRefreshing?: boolean;
   spreadsheetId: string;
@@ -26,6 +28,7 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
   currentLang,
   onLanguageChange,
   onOpenSettings,
+  onOpenAdmin,
   onRefreshQuestions,
   isRefreshing,
   spreadsheetId
@@ -206,11 +209,24 @@ export const FormHeader: React.FC<FormHeaderProps> = ({
           <button
             type="button"
             onClick={onOpenSettings}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg text-white bg-slate-900 hover:bg-slate-800 transition-colors shadow-xs"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 transition-colors shadow-xs"
           >
-            <Settings className="w-3.5 h-3.5 text-emerald-400" />
+            <Settings className="w-3.5 h-3.5 text-slate-600" />
             <span>{t.sheetSettings}</span>
           </button>
+
+          {/* Admin Dashboard Button */}
+          {onOpenAdmin && (
+            <button
+              type="button"
+              onClick={onOpenAdmin}
+              title="لوحة تحكم الإدارة واستعراض الإجابات والنتائج"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg text-white bg-slate-900 hover:bg-slate-800 transition-colors shadow-xs"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">لوحة الإدارة</span>
+            </button>
+          )}
         </div>
       </div>
     </header>

@@ -21,7 +21,7 @@ export interface RegistrationQuestion {
   id: string | number;
   question: string;         // Column A: نص السؤال
   description?: string;     // Column B: الوصف التوضيحي
-  type: "text" | "number" | "phone" | "email" | "url" | "choice" | "file" | "button_title" | "image_display" | string; // Column C: نوع العنصر
+  type: "text" | "number" | "phone" | "email" | "url" | "choice" | "scored_choice" | "multiple_choice" | "file" | "button_title" | "image_display" | string; // Column C: نوع العنصر
   options?: string[];       // Column D: الخيارات المتاحة
   required: boolean;        // Column E: هل الحقل إجباري؟
   imageUrl?: string;        // Column F: رابط الصورة المعروضة
@@ -78,7 +78,10 @@ export interface FormSubmissionPayload {
     question: string;
     answer: string;
     type?: string;
+    score?: number;
   }>;
+  totalScore?: number;
+  hasScoredQuestions?: boolean;
   attachment?: string;
   scriptUrl?: string;
   spreadsheetId?: string;
@@ -103,4 +106,21 @@ export interface AppConfig {
   scriptUrl: string;
   driveFolderId: string;
   telegramConfig: TelegramConfig;
+}
+
+export interface SheetAnswerRecord {
+  rowIndex: number;
+  timestamp: string;
+  registrationId: string;
+  name: string;
+  totalScore?: string | number;
+  answers: Record<string, string>;
+  rawRow: Record<string, any>;
+}
+
+export interface SheetAnswersData {
+  headers: string[];
+  records: SheetAnswerRecord[];
+  totalScoreHeader?: string;
+  lastUpdated?: string;
 }

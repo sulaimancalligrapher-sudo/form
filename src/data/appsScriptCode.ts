@@ -137,6 +137,13 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
 
+    // ج) حفظ وتحديث أسئلة ورقة RegistrationQuestions من لوحة الإدارة
+    if (action === "saveFormQuestions" || action === "saveQuestions") {
+      var saveResult = saveFormQuestionsToSheet(postData.questions);
+      return ContentService.createTextOutput(JSON.stringify(saveResult))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
     return ContentService.createTextOutput(JSON.stringify({
       success: true,
       action: action,
@@ -149,6 +156,87 @@ function doPost(e) {
       error: err.toString()
     })).setMimeType(ContentService.MimeType.JSON);
   }
+}
+
+// دالة استخراج النقاط الرقمية من إجابة خيارات نقاط (اختيارات 2)
+function extractScoreFromAnswer(ansStr) {
+  if (ansStr === undefined || ansStr === null || ansStr === "") return 0;
+  var s = ansStr.toString().trim();
+
+  // 1. نمط: رقم متبوع بفاصل مثل: "4 - ممتاز" أو "4-ممتاز" أو "4: نعم" أو "4. خيار" أو "4) موافق"
+  var m1 = s.match(/(?:^|[^\d.])(\d+(?:\.\d+)?)\s*[-—–ـ:.)/]/);
+  if (m1 && m1[1]) {
+    var v1 = parseFloat(m1[1]);
+    if (!isNaN(v1)) return v1;
+  }
+
+  // 2. نمط: أرقام بين أقواس مثل "(4)" أو "[4]"
+  var m2 = s.match(/[(\[]\s*(\d+(?:\.\d+)?)\s*[)\]]/);
+  if (m2 && m2[1]) {
+    var v2 = parseFloat(m2[1]);
+    if (!isNaN(v2)) return v2;
+  }
+
+  // 3. نمط: رقم في بداية النص أو نص رقمي مجرد: "4" أو "4 خيار"
+  var m3 = s.match(/^\s*(\d+(?:\.\d+)?)/);
+  if (m3 && m3[1]) {
+    var v3 = parseFloat(m3[1]);
+    if (!isNaN(v3)) return v3;
+  }
+
+  // 4. أي رقم مستقل داخل النص
+  var m4 = s.match(/\b(\d+(?:\.\d+)?)\b/);
+  if (m4 && m4[1]) {
+    var v4 = parseFloat(m4[1]);
+    if (!isNaN(v4)) return v4;
+  }
+
+  return 0;
+}
+
+// دالة فحص هل نوع السؤال هو من نوع اختيارات نقاط (اختيارات 2)
+function isScoredQuestionType(typeStr) {
+  if (!typeStr) return false;
+  var t = typeStr.toString().toLowerCase().trim();
+  // اختيارات 3 (اختيار متعدد / Checkboxes) ليست لحساب النقاط
+  if (
+    t.indexOf("3") !== -1 ||
+    t.indexOf("متعدد") !== -1 ||
+    t.indexOf("checkbox") !== -1 ||
+    t.indexOf("multi") !== -1
+  ) {
+    return false;
+  }
+  return (
+    t.indexOf("اختيارات 2") !== -1 ||
+    t.indexOf("اختيار 2") !== -1 ||
+    t.indexOf("اختيارات2") !== -1 ||
+    t.indexOf("خيارات 2") !== -1 ||
+    t.indexOf("خيارات2") !== -1 ||
+    t.indexOf("choice2") !== -1 ||
+    t.indexOf("choice 2") !== -1 ||
+    t.indexOf("scored") !== -1 ||
+    t.indexOf("نقاط") !== -1 ||
+    t.indexOf("درجات") !== -1 ||
+    t.indexOf("تقييم") !== -1
+  );
+}
+
+// دالة فحص هل العمود هو عمود مجموع النقاط
+function isTotalScoreHeader(headerStr) {
+  if (!headerStr) return false;
+  var norm = normalizeQuestionKey(headerStr);
+  return (
+    norm === "مجموع النقاط" ||
+    norm === "المجموع" ||
+    norm === "الدرجة" ||
+    norm === "النقاط" ||
+    norm === "مجموع الدرجات" ||
+    norm === "التقييم" ||
+    norm === "total score" ||
+    norm === "score" ||
+    norm === "total"
+  );
 }
 
 // دالة تنظيف ومطابقة عناوين الأعمدة والأسئلة (تتجاهل الفروقات الإملائية مثل انواع وانوان والهمزات والمسافات)
@@ -165,67 +253,51 @@ function normalizeQuestionKey(str) {
     .replace(/انوان/g, "انواع"); // مطابقة كلمة انوان مع انواع
 }
 
-// دالة استخراج القيمة الدقيقة للعمود من الإجابات المستلمة
-function findAnswerForColumn(colHeader, answersMap, data) {
+// دالة استخراج القيمة الدقيقة للعمود من الإجابات المستلمة بدون أي افتراضات سابقة
+function findAnswerForColumn(colHeader, answersMap, data, qIdx) {
+  if (!colHeader && (qIdx === undefined || qIdx < 0)) return "";
   var normCol = normalizeQuestionKey(colHeader);
-  if (!normCol) return "";
 
-  // 1. مطابقة مباشرة
-  if (answersMap[colHeader] !== undefined && answersMap[colHeader] !== "") {
+  // 1. مطابقة مباشرة بالاسم الدقيق للسؤال
+  if (colHeader && answersMap[colHeader] !== undefined && answersMap[colHeader] !== null && answersMap[colHeader] !== "") {
     return answersMap[colHeader];
   }
 
   // 2. مطابقة عبر المفاتيح المنظفة
-  for (var key in answersMap) {
-    if (normalizeQuestionKey(key) === normCol) {
-      return answersMap[key];
+  if (normCol) {
+    for (var key in answersMap) {
+      if (normalizeQuestionKey(key) === normCol && answersMap[key] !== undefined && answersMap[key] !== "") {
+        return answersMap[key];
+      }
     }
   }
 
-  // 3. مطابقة الحقول الأساسية والمرادفات الشائعة
-  if (normCol === "الاسم" || normCol === "الاسم الكامل" || normCol === "الاسم الكامل لك" || normCol === "اسمك" || normCol === "full name" || normCol === "name") {
-    return answersMap["الاسم"] || answersMap["الاسم الكامل"] || data.name || "";
-  }
-  if (normCol === "الاسم بالعربي" || normCol === "الاسم باللغه العربيه" || normCol === "arabic name" || normCol === "name in arabic") {
-    return answersMap["الاسم بالعربي"] || data.nameArabic || "";
-  }
-  if (normCol === "العمر" || normCol === "عمر المشترك" || normCol === "age") {
-    return answersMap["العمر"] || data.age || "";
-  }
-  if (normCol === "رقم الهاتف" || normCol === "الهاتف" || normCol === "رقم الجوال" || normCol === "الموبايل" || normCol === "phone" || normCol === "whatsapp") {
-    return answersMap["رقم الهاتف"] || data.phone || "";
-  }
-  if (normCol === "ايميل" || normCol === "البريد الالكتروني" || normCol === "الايميل" || normCol === "email") {
-    return answersMap["ايميل"] || answersMap["البريد الإلكتروني"] || data.email || "";
-  }
-  if (normCol === "id line" || normCol === "line id" || normCol === "معرف لاين" || normCol === "لاين") {
-    return answersMap["ID Line"] || data.lineId || "";
-  }
-  if (normCol === "فيس بوك" || normCol === "فيسبوك" || normCol === "facebook") {
-    return answersMap["فيس بوك"] || data.facebook || "";
-  }
-  if (normCol.indexOf("استاذك") !== -1 || normCol.indexOf("معلمك") !== -1) {
-    for (var k1 in answersMap) {
-      if (k1.indexOf("استاذك") !== -1 || k1.indexOf("معلمك") !== -1) return answersMap[k1];
+  // 3. مطابقة ترتيبية من مصفوفة الإجابات المرسلة من النموذج
+  if (data && data.answers && Array.isArray(data.answers)) {
+    // أ) عبر رقم الترتيب الدقيق للسؤال
+    if (qIdx !== undefined && qIdx >= 0 && qIdx < data.answers.length) {
+      var item = data.answers[qIdx];
+      if (item && item.answer !== undefined && item.answer !== null && item.answer !== "") {
+        return item.answer;
+      }
+    }
+
+    // ب) عبر مطابقة عنوان السؤال في المصفوفة
+    if (normCol) {
+      for (var ai = 0; ai < data.answers.length; ai++) {
+        var itm = data.answers[ai];
+        if (itm && itm.question && normalizeQuestionKey(itm.question) === normCol) {
+          if (itm.answer !== undefined && itm.answer !== null && itm.answer !== "") {
+            return itm.answer;
+          }
+        }
+      }
     }
   }
-  if (normCol.indexOf("تحب الخط") !== -1) {
-    for (var k2 in answersMap) {
-      if (k2.indexOf("تحب الخط") !== -1) return answersMap[k2];
-    }
-  }
-  if (normCol.indexOf("انواع الخط") !== -1 || normCol.indexOf("انوان الخط") !== -1) {
-    for (var k3 in answersMap) {
-      if (k3.indexOf("انواع الخط") !== -1 || k3.indexOf("انوان الخط") !== -1) return answersMap[k3];
-    }
-  }
-  if (normCol.indexOf("تحب الفن") !== -1) {
-    for (var k4 in answersMap) {
-      if (k4.indexOf("تحب الفن") !== -1) return answersMap[k4];
-    }
-  }
-  if (normCol.indexOf("رفع") !== -1 || normCol.indexOf("ملف") !== -1 || normCol.indexOf("مرفق") !== -1 || normCol.indexOf("drive") !== -1) {
-    return answersMap["رفع ملف"] || answersMap["ملف المرفقات"] || data.attachment || "";
+
+  // 4. فحص المرفقات في حال كان الحقل لرفع الملفات
+  if (data.attachment && normCol && (normCol.indexOf("ملف") !== -1 || normCol.indexOf("مرفق") !== -1 || normCol.indexOf("صوره") !== -1)) {
+    return data.attachment;
   }
 
   return "";
@@ -238,7 +310,7 @@ function submitRegistrationToSheet(data) {
     var sheetName = "RegistrationAnswers";
     var sheet = ss.getSheetByName(sheetName) || ss.getSheetByName("طلبات التسجيل") || ss.getSheetByName("إجابات التسجيل");
     
-    // إنشاء الورقة وترويسة الأعمدة تلقائياً إذا لم تكن موجودة
+    // إنشاء الورقة إذا لم تكن موجودة
     if (!sheet) {
       sheet = ss.insertSheet(sheetName);
     }
@@ -246,17 +318,12 @@ function submitRegistrationToSheet(data) {
     // تنسيق التاريخ والوقت
     var timestamp = Utilities.formatDate(new Date(), "GMT+3", "yyyy/MM/dd - hh:mm a");
 
-    // توليد أو اعتماد رقم التسجيل المرجعي
-    var nowObj = new Date();
-    var regYear = nowObj.getFullYear().toString();
-    var regMonth = (nowObj.getMonth() + 1).toString();
-    var regRand = Math.floor(1000 + Math.random() * 9000).toString();
-    var autoRegId = regYear + regMonth + regRand;
-    var registrationId = (data.registrationId && String(data.registrationId).trim().length >= 6)
-      ? String(data.registrationId).trim()
-      : autoRegId;
-
-    var displayName = data.name || data.nameArabic || "مشترك جديد";
+    // اعتماد رقم المشترك الحقيقي والاسم الكامل
+    var registrationId = String(data.registrationId || data.subscriberId || "").trim();
+    var displayName = (data.name || "").toString().trim();
+    if (!registrationId && displayName) {
+      registrationId = displayName;
+    }
 
     // تجميع الإجابات في كائن ميسر
     var answersMap = {};
@@ -270,15 +337,9 @@ function submitRegistrationToSheet(data) {
       }
     }
 
-    // مطابقة الحقول الأساسية
-    if (data.name && !answersMap["الاسم"]) answersMap["الاسم"] = data.name;
-    if (data.nameArabic && !answersMap["الاسم بالعربي"]) answersMap["الاسم بالعربي"] = data.nameArabic;
-    if (data.age && !answersMap["العمر"]) answersMap["العمر"] = data.age;
-    if (data.phone && !answersMap["رقم الهاتف"]) answersMap["رقم الهاتف"] = data.phone;
-    if (data.email && !answersMap["ايميل"]) answersMap["ايميل"] = data.email;
-    if (data.lineId && !answersMap["ID Line"]) answersMap["ID Line"] = data.lineId;
-    if (data.facebook && !answersMap["فيس بوك"]) answersMap["فيس بوك"] = data.facebook;
-    if (data.attachment && !answersMap["رفع ملف"]) answersMap["رفع ملف"] = data.attachment;
+    if (data.attachment && !answersMap["رفع ملف"]) {
+      answersMap["رفع ملف"] = data.attachment;
+    }
 
     // رفع أي صور أو ملفات Base64 إلى قوقل درايف تلقائياً
     var targetFolderId = data.driveFolderId || "1tae6n3-tjB9vVtxr2GbK572SRtWxZ3f7";
@@ -300,7 +361,142 @@ function submitRegistrationToSheet(data) {
       }
     }
 
-    // قراءة ترويسة الأعمدة الحالية في الورقة
+    // قراءة أسئلة ورقة RegistrationQuestions لتحديد الأعمدة النشطة بدقة وبدون أي أثر للنظام القديم
+    var activeQuestions = [];
+    var scoredQuestionsMap = {};
+    var hasScoredQuestions = (data.hasScoredQuestions === true);
+
+    try {
+      var qSheetObj = ss.getSheetByName("RegistrationQuestions") || ss.getSheetByName("أسئلة التسجيل");
+      if (qSheetObj) {
+        var qData = qSheetObj.getDataRange().getValues();
+        for (var qi = 0; qi < qData.length; qi++) {
+          var qRow = qData[qi];
+          if (!qRow || !qRow[0]) continue;
+          var qTitle = String(qRow[0]).trim();
+          var qTypeVal = qRow[2] ? String(qRow[2]).trim().toLowerCase() : "text";
+
+          // تجاوز الترويسة إن وجدت
+          if (qTitle === "السؤال" || qTitle === "عنوان الحقل" || qTitle === "Question" || qTitle === "نص السؤال") continue;
+
+          // تجاوز عناصر العرض فقط التي لا تتطلب إجابة
+          if (
+            qTitle === "صورة" ||
+            qTypeVal === "صورة" ||
+            qTypeVal.indexOf("عرض صورة") !== -1 ||
+            qTypeVal.indexOf("عنوان زر") !== -1 ||
+            qTypeVal === "زر" ||
+            qTypeVal === "button"
+          ) {
+            continue;
+          }
+
+          // تجاوز أسئلة الاسم ورقم المشترك إذا وُجدت لأنها مسجلة سلفاً في العمودين B و C
+          var normQT = normalizeQuestionKey(qTitle);
+          if (
+            normQT === "الاسم" ||
+            normQT === "اسم المشترك" ||
+            normQT === "الاسم الكامل" ||
+            normQT === "رقم المشترك" ||
+            normQT === "رقم التسجيل" ||
+            normQT === "id"
+          ) {
+            continue;
+          }
+
+          activeQuestions.push({
+            title: qTitle,
+            type: qTypeVal
+          });
+
+          if (isScoredQuestionType(qTypeVal)) {
+            scoredQuestionsMap[normQT] = true;
+            hasScoredQuestions = true;
+          }
+        }
+      }
+    } catch (qErr) {
+      Logger.log("Notice: Could not read RegistrationQuestions: " + qErr.message);
+    }
+
+    // إذا تعذر قراءة ورقة الأسئلة مباشرة، نعتمد على الأسئلة الواردة من واجهة المستخدم
+    if (activeQuestions.length === 0 && data.answers && Array.isArray(data.answers)) {
+      for (var di = 0; di < data.answers.length; di++) {
+        var dItem = data.answers[di];
+        if (!dItem || !dItem.question) continue;
+        var dQT = String(dItem.question).trim();
+        var normDQT = normalizeQuestionKey(dQT);
+        if (
+          normDQT === "الاسم" ||
+          normDQT === "اسم المشترك" ||
+          normDQT === "الاسم الكامل" ||
+          normDQT === "رقم المشترك" ||
+          normDQT === "رقم التسجيل" ||
+          normDQT === "id"
+        ) {
+          continue;
+        }
+        var dType = dItem.type || "text";
+        activeQuestions.push({
+          title: dQT,
+          type: dType
+        });
+        if (isScoredQuestionType(dType)) {
+          scoredQuestionsMap[normDQT] = true;
+          hasScoredQuestions = true;
+        }
+      }
+    }
+
+    // حساب مجموع نقاط أسئلة (اختيارات 2 / scored_choice)
+    var totalScore = 0;
+    if (data.answers && Array.isArray(data.answers)) {
+      for (var ai = 0; ai < data.answers.length; ai++) {
+        var aItem = data.answers[ai];
+        if (!aItem) continue;
+        var aType = (aItem.type || "").toString().toLowerCase().trim();
+        var aQ = (aItem.question || "").toString().trim();
+        var isScoredType = (
+          isScoredQuestionType(aType) ||
+          scoredQuestionsMap[normalizeQuestionKey(aQ)] === true ||
+          aItem.score !== undefined
+        );
+
+        if (isScoredType) {
+          hasScoredQuestions = true;
+          var scoreNum = extractScoreFromAnswer(aItem.answer);
+          if (scoreNum === 0 && aItem.score !== undefined && aItem.score !== null) {
+            scoreNum = Number(aItem.score) || 0;
+          }
+          totalScore += scoreNum;
+        }
+      }
+    }
+
+    // إذا تم تمرير مجموع النقاط جاهزاً من الواجهة
+    if (totalScore === 0 && data.totalScore !== undefined && data.totalScore !== null && !isNaN(Number(data.totalScore))) {
+      totalScore = Number(data.totalScore);
+      if (totalScore > 0) hasScoredQuestions = true;
+    }
+
+    // بناء الترويسة القياسية الصارمة والمطلوبة:
+    // العمود A: التاريخ والوقت
+    // العمود B: رقم التسجيل (رقم المشترك الفعلي)
+    // العمود C: الاسم الكامل للمشترك
+    // الأعمدة اللاحقة: أسئلة الاستمارة الفعالة بالترتيب الدقيق
+    // العمود الأخير دائماً: مجموع النقاط
+    var expectedHeaders = [
+      "التاريخ والوقت",
+      "رقم التسجيل",
+      "الاسم الكامل للمشترك"
+    ];
+    for (var aq = 0; aq < activeQuestions.length; aq++) {
+      expectedHeaders.push(activeQuestions[aq].title);
+    }
+    // وضع عنوان العمود الأخير تلقائياً باسم: مجموع النقاط
+    expectedHeaders.push("مجموع النقاط");
+
+    // قراءة ترويسة الأعمدة الحالية في ورقة RegistrationAnswers
     var lastRow = sheet.getLastRow();
     var lastCol = sheet.getLastColumn();
     var headers = [];
@@ -309,94 +505,139 @@ function submitRegistrationToSheet(data) {
       headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(function(h) {
         return (h || "").toString().trim();
       });
-      // إزالة الأعمدة الفارغة في النهاية
       while (headers.length > 0 && !headers[headers.length - 1]) {
         headers.pop();
       }
     }
 
-    // إذا كانت الورقة فارغة تماماً، نؤسس الترويسة القياسية لمرة واحدة فقط
-    if (headers.length === 0 || !headers[0]) {
-      headers = [
-        "التاريخ والوقت",
-        "رقم التسجيل",
-        "الاسم",
-        "الاسم بالعربي",
-        "العمر",
-        "رقم الهاتف",
-        "ايميل",
-        "ID Line",
-        "فيس بوك",
-        "هل تحب الخط العربي؟",
-        "ما اسم استاذك الذي علمك الخط؟",
-        "هل تعرفين انوان الخط",
-        "هل تحب الفن",
-        "رفع ملف"
-      ];
-      sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-      sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setBackground("#1E293B").setFontColor("#F8FAFC").setHorizontalAlignment("center");
-      sheet.setFrozenRows(1);
+    // التحقق مما إذا كانت الترويسة بحاجة لتحديث فوري لمطابقة الهيكل الجديد
+    var needHeaderUpdate = false;
+    if (headers.length !== expectedHeaders.length) {
+      needHeaderUpdate = true;
+    } else if (!isTotalScoreHeader(headers[headers.length - 1])) {
+      needHeaderUpdate = true;
+    } else if (
+      headers[0] !== "التاريخ والوقت" ||
+      headers[1] !== "رقم التسجيل" ||
+      headers[2] !== "الاسم الكامل للمشترك"
+    ) {
+      needHeaderUpdate = true;
+    } else {
+      for (var hi = 0; hi < expectedHeaders.length; hi++) {
+        if (normalizeQuestionKey(headers[hi]) !== normalizeQuestionKey(expectedHeaders[hi])) {
+          needHeaderUpdate = true;
+          break;
+        }
+      }
     }
 
-    // ملاحظة أمان: لا نضيف أي أعمدة إضافية إذا كانت الأعمدة موجودة بالفعل
-    // وذلك لمنع تشويه الورقة بزيادة أعمدة عشوائية
+    // إذا كانت الترويسة بحاجة لتحديث، نطبق الهيكل النظيف والجديد فوراً
+    if (needHeaderUpdate && expectedHeaders.length >= 3) {
+      var maxClearCols = Math.max(headers.length, expectedHeaders.length, lastCol || 0, 50);
+      sheet.getRange(1, 1, 1, maxClearCols).clearContent();
+      sheet.getRange(1, 1, 1, expectedHeaders.length).setValues([expectedHeaders]);
+      
+      // التنسيق العام لترويسة الأعمدة
+      sheet.getRange(1, 1, 1, expectedHeaders.length)
+        .setFontWeight("bold")
+        .setBackground("#1E293B")
+        .setFontColor("#F8FAFC")
+        .setHorizontalAlignment("center");
 
-    // بناء صف الإدخال الجديد بمطابقة ذكية لكل عمود في الترويسة
+      // تمييز عمود مجموع النقاط الأخير بلون مميز
+      sheet.getRange(1, expectedHeaders.length)
+        .setFontWeight("bold")
+        .setBackground("#047857")
+        .setFontColor("#FFFFFF")
+        .setHorizontalAlignment("center");
+
+      sheet.setFrozenRows(1);
+      headers = expectedHeaders;
+    }
+
+    // بناء صف الإدخال الجديد بالترتيب الصارم:
+    // العمود 0 (A): التاريخ والوقت
+    // العمود 1 (B): رقم التسجيل
+    // العمود 2 (C): الاسم الكامل للمشترك
+    // العمود 3 فما بعد (D+): إجابات الأسئلة بالترتيب الدقيق
+    // العمود الأخير: مجموع النقاط
     var newRow = [];
+    var totalScoreColIndex = headers.length - 1;
+
     for (var c = 0; c < headers.length; c++) {
       var hName = headers[c];
-      var normH = normalizeQuestionKey(hName);
 
-      if (normH === "التاريخ والوقت" || normH.indexOf("وقت") !== -1 || normH.indexOf("تاريخ") !== -1) {
+      // 1. العمود الأول (A): التاريخ والوقت حصراً
+      if (c === 0) {
         newRow.push(timestamp);
-      } else if (normH === "رقم التسجيل" || normH.indexOf("تسجيل") !== -1 || normH.indexOf("رقم القيد") !== -1) {
+      } 
+      // 2. العمود الثاني (B): رقم التسجيل حصراً
+      else if (c === 1) {
         newRow.push(registrationId);
-      } else {
-        var ans = findAnswerForColumn(hName, answersMap, data);
-        newRow.push(ans);
+      } 
+      // 3. العمود الثالث (C): الاسم الكامل للمشترك حصراً
+      else if (c === 2) {
+        newRow.push(displayName);
+      } 
+      // 4. العمود الأخير: مجموع النقاط
+      else if (c === totalScoreColIndex || (c > 2 && isTotalScoreHeader(hName))) {
+        newRow.push(hasScoredQuestions || totalScore > 0 ? totalScore : (hasScoredQuestions ? 0 : ""));
+      } 
+      // 5. جميع الأعمدة الأخرى (من D إلى ما قبل الأخير): إجابات أسئلة الاستمارة
+      else {
+        var qIdx = c - 3;
+        var ans = findAnswerForColumn(hName, answersMap, data, qIdx);
+        // حفظ الإجابة كنص صريح دون أي تغيير أو تحويل للتواريخ
+        var ansStr = (ans !== undefined && ans !== null) ? ans.toString() : "";
+        newRow.push(ansStr);
       }
     }
 
-    // فحص منع التكرار: البحث عن رقم التسجيل في الجدول
-    var regIdColIdx = 2; // العمود B افتراضياً
-    for (var h = 0; h < headers.length; h++) {
-      var headNorm = normalizeQuestionKey(headers[h]);
-      if (headNorm === "رقم التسجيل" || headNorm.indexOf("تسجيل") !== -1) {
-        regIdColIdx = h + 1;
-        break;
-      }
-    }
-
+    // فحص منع التكرار: البحث عن رقم المشترك في العمود B
+    var regIdColIdx = 2; // العمود B دائماً
     var existingRowIdx = -1;
     if (lastRow > 1) {
       var idValues = sheet.getRange(2, regIdColIdx, lastRow - 1, 1).getValues();
       for (var r = 0; r < idValues.length; r++) {
         var cellVal = idValues[r][0] ? idValues[r][0].toString().trim() : "";
         if (cellVal && cellVal === registrationId) {
-          existingRowIdx = r + 2; // رقم الصف في قوقل شيت (1-based)
+          existingRowIdx = r + 2;
           break;
         }
       }
     }
 
     if (existingRowIdx !== -1) {
-      // تم العثور على نفس رقم التسجيل: نقوم بتحديث الصف دون إضافة صف مكرر
+      // تحديث بيانات المشترك نفسه
       sheet.getRange(existingRowIdx, 1, 1, newRow.length).setValues([newRow]);
+      if (newRow.length > 3) {
+        var qColsCount = (totalScoreColIndex > 3) ? (totalScoreColIndex - 3) : (newRow.length - 3);
+        if (qColsCount > 0) {
+          sheet.getRange(existingRowIdx, 4, 1, qColsCount).setNumberFormat("@");
+        }
+      }
       return {
         success: true,
         registrationId: registrationId,
         timestamp: timestamp,
         isUpdated: true,
-        message: "تم تحديث بيانات التسجيل للرقم المرجعي (" + registrationId + ") بنجاح دون تكرار!"
+        message: "تم تحديث بيانات التسجيل للرقم (" + registrationId + ") بنجاح!"
       };
     } else {
-      // صف جديد لأول مرة
+      // إضافة صف جديد
       sheet.appendRow(newRow);
       var newLastRow = sheet.getLastRow();
       if (newLastRow > 1) {
         sheet.getRange(newLastRow, 1, 1, newRow.length).setVerticalAlignment("middle");
         sheet.getRange(newLastRow, 1).setHorizontalAlignment("center");
         sheet.getRange(newLastRow, 2).setHorizontalAlignment("center").setFontWeight("bold");
+        if (newRow.length > 3) {
+          var qColsCount = (totalScoreColIndex > 3) ? (totalScoreColIndex - 3) : (newRow.length - 3);
+          if (qColsCount > 0) {
+            sheet.getRange(newLastRow, 4, 1, qColsCount).setNumberFormat("@");
+          }
+          sheet.getRange(newLastRow, newRow.length).setHorizontalAlignment("center").setFontWeight("bold");
+        }
       }
     }
 
@@ -404,7 +645,7 @@ function submitRegistrationToSheet(data) {
       success: true,
       registrationId: registrationId,
       timestamp: timestamp,
-      message: "تم استلام وحفظ طلب التسجيل بنجاح بالرقم المرجعي (" + registrationId + ") في جدول البيانات!"
+      message: "تم حفظ طلب التسجيل بنجاح بالرقم المرجعي (" + registrationId + ") في جدول البيانات!"
     };
 
   } catch (error) {
@@ -489,6 +730,8 @@ function getFormQuestionsFromSheet() {
         fieldType = "number";
       } else if (rawType.indexOf("ايميل") !== -1 || rawType.indexOf("بريد") !== -1 || rawType.indexOf("email") !== -1) {
         fieldType = "email";
+      } else if (rawType.indexOf("اختيارات 2") !== -1 || rawType.indexOf("اختيار 2") !== -1 || rawType.indexOf("اختيارات2") !== -1 || rawType.indexOf("choice2") !== -1 || rawType.indexOf("scored_choice") !== -1 || rawType.indexOf("نقاط") !== -1) {
+        fieldType = "scored_choice";
       } else if (rawType.indexOf("اختيار") !== -1 || rawType.indexOf("choice") !== -1 || rawType.indexOf("select") !== -1) {
         fieldType = "choice";
       }
@@ -524,27 +767,123 @@ function getFormQuestionsFromSheet() {
   }
 }
 
-// 6. جلب أحدث السجلات المسجلة
+// 6. جلب السجلات المسجلة من ورقة RegistrationAnswers
 function getRegistrationAnswersRecords() {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName("RegistrationAnswers") || ss.getSheetByName("طلبات التسجيل");
-    if (!sheet) return [];
+    var sheet = ss.getSheetByName("RegistrationAnswers") || ss.getSheetByName("طلبات التسجيل") || ss.getSheetByName("إجابات التسجيل");
+    if (!sheet) return { headers: [], records: [] };
     var values = sheet.getDataRange().getValues();
-    if (values.length <= 1) return [];
-    var headers = values[0];
+    if (values.length <= 1) return { headers: values[0] || [], records: [] };
+    var headers = values[0].map(function(h) { return (h || "").toString().trim(); });
     var records = [];
-    for (var r = values.length - 1; r >= Math.max(1, values.length - 30); r--) {
+    for (var r = values.length - 1; r >= 1; r--) {
       var row = values[r];
-      var rec = { rowIndex: r + 1 };
+      var rec = { rowIndex: r + 1, rowData: {} };
       for (var c = 0; c < headers.length; c++) {
-        rec[headers[c]] = row[c];
+        var hName = headers[c] || ("Column_" + (c + 1));
+        var val = (row[c] !== undefined && row[c] !== null) ? row[c] : "";
+        rec.rowData[hName] = val;
       }
       records.push(rec);
     }
-    return records;
+    return { headers: headers, records: records };
   } catch(e) {
-    return [];
+    return { headers: [], records: [], error: e.toString() };
+  }
+}
+
+// 7. حفظ وتحديث أسئلة ورقة RegistrationQuestions من لوحة الإدارة
+function saveFormQuestionsToSheet(questions) {
+  try {
+    if (!questions || !Array.isArray(questions)) {
+      return { success: false, error: "قائمة الأسئلة غير صالحة" };
+    }
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheetName = "RegistrationQuestions";
+    var sheet = ss.getSheetByName(sheetName) || ss.getSheetByName("أسئلة التسجيل");
+    if (!sheet) {
+      sheet = ss.insertSheet(sheetName);
+    }
+    
+    var headers = [
+      "نص السؤال",
+      "الوصف التوضيحي",
+      "نوع العنصر",
+      "الخيارات المتاحة",
+      "هل الحقل إجباري؟",
+      "رابط الصورة المعروضة",
+      "رابط خارجي أو ملف PDF"
+    ];
+
+    sheet.clearContents();
+    var rows = [headers];
+
+    for (var i = 0; i < questions.length; i++) {
+      var q = questions[i];
+      if (!q) continue;
+
+      var optStr = "";
+      if (Array.isArray(q.options)) {
+        optStr = q.options.join("|||");
+      } else if (q.options) {
+        optStr = String(q.options);
+      }
+
+      var reqStr = (q.required === true || q.required === "نعم") ? "نعم" : "لا";
+      
+      var rawT = (q.type || "text").toString().toLowerCase().trim();
+      var typeAr = "نص";
+      if (rawT === "choice" || (rawT.indexOf("اختيار") !== -1 && rawT.indexOf("2") === -1 && rawT.indexOf("3") === -1)) {
+        typeAr = "اختيارات";
+      } else if (rawT === "scored_choice" || rawT.indexOf("2") !== -1 || rawT.indexOf("نقاط") !== -1) {
+        typeAr = "اختيارات 2";
+      } else if (rawT === "multiple_choice" || rawT.indexOf("3") !== -1 || rawT.indexOf("متعدد") !== -1 || rawT.indexOf("checkbox") !== -1) {
+        typeAr = "اختيارات 3";
+      } else if (rawT === "file" || rawT.indexOf("ملف") !== -1 || rawT.indexOf("رفع") !== -1) {
+        typeAr = "رفع ملف";
+      } else if (rawT === "phone" || rawT.indexOf("هاتف") !== -1) {
+        typeAr = "رقم هاتف";
+      } else if (rawT === "email" || rawT.indexOf("ايميل") !== -1 || rawT.indexOf("بريد") !== -1) {
+        typeAr = "ايميل";
+      } else if (rawT === "number" || rawT.indexOf("رقم") !== -1) {
+        typeAr = "رقم";
+      } else if (rawT === "image_display" || rawT === "صورة" || rawT.indexOf("عرض صورة") !== -1) {
+        typeAr = "صورة";
+      } else if (rawT === "button_title" || rawT.indexOf("زر") !== -1) {
+        typeAr = "عنوان زر";
+      }
+
+      rows.push([
+        q.question || "",
+        q.description || "",
+        typeAr,
+        optStr,
+        reqStr,
+        q.imageUrl || "",
+        q.externalLink || ""
+      ]);
+    }
+
+    sheet.getRange(1, 1, rows.length, 7).setValues(rows);
+    sheet.getRange(1, 1, 1, 7)
+      .setFontWeight("bold")
+      .setBackground("#1E293B")
+      .setFontColor("#FFFFFF")
+      .setHorizontalAlignment("center");
+    sheet.setFrozenRows(1);
+
+    return {
+      success: true,
+      count: questions.length,
+      message: "تم حفظ وتحديث " + questions.length + " سؤال في ورقة RegistrationQuestions بنجاح!"
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err.toString(),
+      message: "فشل حفظ الأسئلة: " + err.toString()
+    };
   }
 }
 `;

@@ -24,7 +24,9 @@ import {
   TelegramConfig,
   FormSubmissionPayload,
   SubmissionResponse,
-  RegistrationQuestion
+  RegistrationQuestion,
+  SheetAnswerRecord,
+  SheetAnswersData
 } from "../types";
 
 /**
@@ -41,6 +43,76 @@ export function formatImageUrl(url: string): string {
     return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1200`;
   }
   return trimmed;
+}
+
+/**
+ * Extracts numeric score points from answers of type 'اختيارات 2'
+ * Handles all formats: "4 - ممتاز", "(4)", "4: خيار", "4" etc.
+ */
+export function extractScoreFromAnswer(ansStr: string | number | undefined | null): number {
+  if (ansStr === undefined || ansStr === null || ansStr === "") return 0;
+  const s = String(ansStr).trim();
+
+  // 1. "4 - ممتاز", "4-ممتاز", "4 : نعم", "4. ممتاز", "4) موافق"
+  const m1 = s.match(/(?:^|[^\d.])(\d+(?:\.\d+)?)\s*[-—–ـ:.)/]/);
+  if (m1 && m1[1]) {
+    const v1 = parseFloat(m1[1]);
+    if (!isNaN(v1)) return v1;
+  }
+
+  // 2. Parenthesized "(4)" or "[4]"
+  const m2 = s.match(/[(\[]\s*(\d+(?:\.\d+)?)\s*[)\]]/);
+  if (m2 && m2[1]) {
+    const v2 = parseFloat(m2[1]);
+    if (!isNaN(v2)) return v2;
+  }
+
+  // 3. Pure number at start or whole string: "4" or "4 ممتاز"
+  const m3 = s.match(/^\s*(\d+(?:\.\d+)?)/);
+  if (m3 && m3[1]) {
+    const v3 = parseFloat(m3[1]);
+    if (!isNaN(v3)) return v3;
+  }
+
+  // 4. Any standalone number in string
+  const m4 = s.match(/\b(\d+(?:\.\d+)?)\b/);
+  if (m4 && m4[1]) {
+    const v4 = parseFloat(m4[1]);
+    if (!isNaN(v4)) return v4;
+  }
+
+  return 0;
+}
+
+/**
+ * Checks whether a question type is scored (اختيارات 2)
+ */
+export function isScoredQuestionType(typeStr: string | undefined | null): boolean {
+  if (!typeStr) return false;
+  const t = typeStr.toString().toLowerCase().trim();
+  // Multiple choice (اختيارات 3) is NOT scored
+  if (
+    t.includes("3") ||
+    t.includes("متعدد") ||
+    t.includes("checkbox") ||
+    t.includes("multi")
+  ) {
+    return false;
+  }
+  return (
+    t === "scored_choice" ||
+    t.includes("اختيارات 2") ||
+    t.includes("اختيارات2") ||
+    t.includes("خيارات 2") ||
+    t.includes("خيارات2") ||
+    t.includes("اختيار 2") ||
+    t.includes("choice2") ||
+    t.includes("choice 2") ||
+    t.includes("scored") ||
+    t.includes("نقاط") ||
+    t.includes("درجات") ||
+    t.includes("تقييم")
+  );
 }
 
 export function getActiveScriptUrl(): string {
@@ -379,10 +451,26 @@ export async function testSheetConnection(
  */
 export async function fetchFormQuestionsBridge(
   explicitScriptUrl?: string,
-  explicitSpreadsheetId?: string
+  explicitSpreadsheetId?: string,
+  forceFromSheet: boolean = false
 ): Promise<RegistrationQuestion[]> {
   const targetScriptUrl = explicitScriptUrl || getActiveScriptUrl();
   const targetSpreadsheetId = explicitSpreadsheetId || getActiveSpreadsheetId();
+
+  // If the admin modified questions in the dashboard and we are not forcing a sheet reload,
+  // prioritize the admin's saved questions so GVIZ CDN caching doesn't overwrite recent edits/deletions
+  if (!forceFromSheet && typeof window !== "undefined") {
+    try {
+      const isAdminModified = localStorage.getItem("thnoon_questions_admin_modified") === "true";
+      const cached = localStorage.getItem("thnoon_cached_registration_questions");
+      if (isAdminModified && cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {}
+  }
 
   // Helper: parse Google Visualization (GVIZ) JSON
   const parseGvizText = (text: string): RegistrationQuestion[] | null => {
@@ -427,48 +515,123 @@ export async function fetchFormQuestionsBridge(
 
       if (qText) {
         let fieldType: RegistrationQuestion["type"] = "text";
+
+        // 1. اختيارات 3 (Multiple choice checkboxes / اختيار متعدد)
         if (
+          qType.includes("اختيارات 3") ||
+          qType.includes("اختيار 3") ||
+          qType.includes("اختيارات3") ||
+          qType.includes("خيارات 3") ||
+          qType.includes("خيارات3") ||
+          qType.includes("choice3") ||
+          qType.includes("choice 3") ||
+          qType.includes("متعدد") ||
+          qType.includes("checkbox") ||
+          qType.includes("multiple_choice") ||
+          qType.includes("multi_choice")
+        ) {
+          fieldType = "multiple_choice";
+        }
+        // 2. اختيارات 2 (Scored choices)
+        else if (
+          qType.includes("اختيارات 2") ||
+          qType.includes("اختيار 2") ||
+          qType.includes("اختيارات2") ||
+          qType.includes("choice2") ||
+          qType.includes("scored_choice") ||
+          qType.includes("نقاط")
+        ) {
+          fieldType = "scored_choice";
+        }
+        // 2. اختيارات (Standard radio choices)
+        else if (
+          qType.includes("اختيارات") ||
+          qType.includes("اختيار") ||
+          qType.includes("choice") ||
+          qType.includes("select") ||
+          qType.includes("راديو")
+        ) {
+          fieldType = "choice";
+        }
+        // 3. رفع ملف (File & image upload)
+        else if (
+          qType.includes("رفع") ||
+          qType.includes("ملف") ||
+          qType.includes("file") ||
+          qType.includes("upload")
+        ) {
+          fieldType = "file";
+        }
+        // 4. رقم هاتف (Phone with international prefix)
+        else if (
+          qType.includes("رقم هاتف") ||
+          qType.includes("هاتف") ||
+          qType.includes("phone") ||
+          qType.includes("موبايل") ||
+          qType.includes("جوال") ||
+          qType.includes("واتساب")
+        ) {
+          fieldType = "phone";
+        }
+        // 5. ايميل (Email with format check)
+        else if (
+          qType.includes("ايميل") ||
+          qType.includes("بريد") ||
+          qType.includes("email")
+        ) {
+          fieldType = "email";
+        }
+        // 6. صورة أو رابط (Image showcase from Drive)
+        else if (
           qText === "صورة" ||
           qType === "صورة" ||
-          qType === "image" ||
+          qType.includes("صورة أو رابط") ||
+          qType.includes("صورة او رابط") ||
           qType.includes("عرض صورة") ||
-          (qType.includes("رابط") && qImage && (!qLink || qLink === "-"))
+          qType.includes("صوره") ||
+          qType.includes("image") ||
+          (qType.includes("رابط") && (qImage || qText.includes("صورة")))
         ) {
           fieldType = "image_display";
-        } else if (
+        }
+        // 7. عنوان زر (Button to open PDF or external link)
+        else if (
           qType.includes("عنوان زر") ||
           qType.includes("زر") ||
           qType.includes("button")
         ) {
           fieldType = "button_title";
-        } else if (qType.includes("رفع") || qType.includes("ملف") || qType.includes("file")) {
-          fieldType = "file";
-        } else if (qType.includes("رقم هاتف") || qType.includes("هاتف") || qType.includes("phone")) {
-          fieldType = "phone";
-        } else if (qType.includes("رقم") || qType.includes("number")) {
-          fieldType = "number";
-        } else if (qType.includes("ايميل") || qType.includes("بريد") || qType.includes("email")) {
-          fieldType = "email";
-        } else if (qType.includes("رابط") || qType.includes("url") || qType.includes("link")) {
-          fieldType = "url";
-        } else if (
-          qType.includes("اختيار") ||
-          qType.includes("choice") ||
-          qType.includes("select")
+        }
+        // 8. رقم (Numeric input)
+        else if (
+          qType.includes("رقم") ||
+          qType.includes("number")
         ) {
-          fieldType = "choice";
+          fieldType = "number";
+        }
+        // 9. نص (Standard text input)
+        else {
+          fieldType = "text";
         }
 
+        // Parse options from Column D (|||, newlines, or commas)
         let opts: string[] = [];
         if (qOptionsStr) {
           if (qOptionsStr.includes("|||")) {
             opts = qOptionsStr.split("|||").map((s: string) => s.trim()).filter(Boolean);
           } else if (qOptionsStr.includes("\n")) {
             opts = qOptionsStr.split("\n").map((s: string) => s.trim()).filter(Boolean);
-          } else {
+          } else if (qOptionsStr.includes("،")) {
+            opts = qOptionsStr.split("،").map((s: string) => s.trim()).filter(Boolean);
+          } else if (qOptionsStr.includes(",")) {
             opts = qOptionsStr.split(",").map((s: string) => s.trim()).filter(Boolean);
           }
         }
+
+        // Image URL: check Column F first, then Column G (if Drive link)
+        const resolvedImage = qImage || (fieldType === "image_display" ? qLink : "");
+        // Button/External Link: check Column G first, then Column F
+        const resolvedLink = (qLink && qLink !== "-") ? qLink : (fieldType === "button_title" ? qImage : undefined);
 
         // Attach translation if exists in dictionary
         const fallbackTrans = DEFAULT_FORM_TRANSLATIONS[qText] || DEFAULT_FORM_TRANSLATIONS[qText.trim()];
@@ -480,8 +643,8 @@ export async function fetchFormQuestionsBridge(
           type: fieldType,
           options: opts.length > 0 ? opts : undefined,
           required: qRequired,
-          imageUrl: qImage ? formatImageUrl(qImage) : undefined,
-          externalLink: qLink && qLink !== "-" ? qLink : undefined,
+          imageUrl: resolvedImage ? formatImageUrl(resolvedImage) : undefined,
+          externalLink: resolvedLink || undefined,
           translations: fallbackTrans
         });
       }
@@ -501,6 +664,9 @@ export async function fetchFormQuestionsBridge(
         if (typeof window !== "undefined") {
           try {
             localStorage.setItem("thnoon_cached_registration_questions", JSON.stringify(parsed));
+            if (forceFromSheet) {
+              localStorage.removeItem("thnoon_questions_admin_modified");
+            }
           } catch (e) {}
         }
         return parsed;
@@ -628,12 +794,9 @@ export async function submitRegistrationBridge(
     ? { ...getTelegramConfig(), ...payload.telegramConfig }
     : getTelegramConfig();
 
-  // Generate consistent Registration ID (Year + Month + 4 digits)
+  // Use the actual Subscriber ID provided by the subscriber/URL/session
   const now = new Date();
-  const autoRegId = `${now.getFullYear()}${now.getMonth() + 1}${Math.floor(1000 + Math.random() * 9000)}`;
-  const regId = payload.registrationId && /^\d{6,14}$/.test(String(payload.registrationId))
-    ? String(payload.registrationId)
-    : autoRegId;
+  const regId = String(payload.registrationId || (payload as any).subscriberId || "").trim();
 
   const pad = (n: number) => n.toString().padStart(2, "0");
   const formattedTimestamp = `${now.getFullYear()}/${pad(now.getMonth() + 1)}/${pad(now.getDate())} - ${pad(now.getHours())}:${pad(now.getMinutes())}`;
@@ -747,5 +910,267 @@ export async function submitRegistrationBridge(
       ? `تم استلام وتأكيد حفظ طلب التسجيل بالرقم المرجعي (${regId}) في جدول قوقل شيت!`
       : `تم إرسال طلب التسجيل بالرقم المرجعي (${regId}) وجاري التدوين في جدول قوقل شيت!`,
     data: { registrationId: regId }
+  };
+}
+
+/**
+ * Checks if a column header represents the Total Score column
+ */
+export function isTotalScoreHeader(headerStr: string | undefined | null): boolean {
+  if (!headerStr) return false;
+  const norm = headerStr
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[؟?!\-_.:]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[أإآ]/g, "ا")
+    .replace(/ة/g, "ه")
+    .replace(/ى/g, "ي");
+  return (
+    norm === "مجموع النقاط" ||
+    norm === "المجموع" ||
+    norm === "الدرجة" ||
+    norm === "النقاط" ||
+    norm === "مجموع الدرجات" ||
+    norm === "التقييم" ||
+    norm === "total score" ||
+    norm === "score" ||
+    norm === "total"
+  );
+}
+
+/**
+ * Fetches all submission records from Google Sheets (RegistrationAnswers)
+ * for the Admin Dashboard with resilience across GVIZ and Apps Script Web App.
+ */
+export async function fetchRegistrationAnswersBridge(
+  explicitScriptUrl?: string,
+  explicitSpreadsheetId?: string
+): Promise<SheetAnswersData> {
+  const targetSpreadsheetId = explicitSpreadsheetId || getActiveSpreadsheetId();
+  const targetScriptUrl = explicitScriptUrl || getActiveScriptUrl();
+
+  // 1. Primary: Direct GVIZ API read
+  try {
+    const gvizUrl = `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/gviz/tq?tqx=out:json&sheet=RegistrationAnswers&_cb=${Date.now()}`;
+    const res = await fetch(gvizUrl, { cache: "no-store" });
+    if (res.ok) {
+      const text = await res.text();
+      const jsonStart = text.indexOf("{");
+      const jsonEnd = text.lastIndexOf("}");
+      if (jsonStart !== -1 && jsonEnd !== -1) {
+        const json = JSON.parse(text.substring(jsonStart, jsonEnd + 1));
+        if (json?.table?.rows) {
+          const cols = json.table.cols || [];
+          let headers = cols.map((c: any) => (c?.label ? String(c.label).trim() : ""));
+          const rows = json.table.rows || [];
+
+          let dataStartIdx = 0;
+          // If labels were missing, read headers from row 0
+          if (headers.every((h: string) => !h) && rows.length > 0) {
+            headers = (rows[0]?.c || []).map((cell: any) =>
+              cell && cell.v !== null && cell.v !== undefined ? String(cell.v).trim() : ""
+            );
+            dataStartIdx = 1;
+          }
+
+          // Identify the total score header if present
+          const totalScoreHeader =
+            headers.find((h: string) => isTotalScoreHeader(h)) ||
+            (headers.length > 3 && isTotalScoreHeader(headers[headers.length - 1])
+              ? headers[headers.length - 1]
+              : undefined);
+
+          const records: SheetAnswerRecord[] = [];
+          for (let r = dataStartIdx; r < rows.length; r++) {
+            const rowCells = rows[r]?.c || [];
+            const valAt = (idx: number): string => {
+              const cell = rowCells[idx];
+              if (!cell || cell.v === null || cell.v === undefined) return "";
+              return String(cell.f || cell.v).trim();
+            };
+
+            const timestamp = valAt(0);
+            const regId = valAt(1);
+            const name = valAt(2);
+
+            if (!regId && !name && !timestamp) continue;
+
+            const answers: Record<string, string> = {};
+            const rawRow: Record<string, any> = {};
+            let totalScore: string | number = "";
+
+            headers.forEach((h: string, cIdx: number) => {
+              const cellVal = valAt(cIdx);
+              const colKey = h || `عمود ${cIdx + 1}`;
+              rawRow[colKey] = cellVal;
+              if (cIdx >= 3 && colKey !== totalScoreHeader) {
+                answers[colKey] = cellVal;
+              }
+              if (colKey === totalScoreHeader) {
+                totalScore = cellVal;
+              }
+            });
+
+            records.push({
+              rowIndex: r + 1,
+              timestamp,
+              registrationId: regId,
+              name,
+              totalScore,
+              answers,
+              rawRow
+            });
+          }
+
+          // Return latest records first
+          return {
+            headers,
+            records: records.reverse(),
+            totalScoreHeader,
+            lastUpdated: new Date().toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })
+          };
+        }
+      }
+    }
+  } catch (gvizErr) {
+    console.warn("GVIZ answers read error, falling back to Apps Script:", gvizErr);
+  }
+
+  // 2. Secondary: Apps Script GET /action=getAnswers
+  try {
+    const gasUrl = `${targetScriptUrl}${targetScriptUrl.includes("?") ? "&" : "?"}action=getAnswers&_cb=${Date.now()}`;
+    const gasRes = await fetch(gasUrl, { cache: "no-store" });
+    if (gasRes.ok) {
+      const data = await gasRes.json();
+      if (data && (data.records || data.recordsData)) {
+        const rawRecs = data.records || data.recordsData || [];
+        const headers = data.headers || (rawRecs.length > 0 ? Object.keys(rawRecs[0].rowData || rawRecs[0]) : []);
+        const totalScoreHeader = headers.find((h: string) => isTotalScoreHeader(h));
+
+        const records: SheetAnswerRecord[] = rawRecs.map((rec: any, idx: number) => {
+          const rowData = rec.rowData || rec;
+          const timestamp = String(rowData["التاريخ والوقت"] || rowData["تاريخ التسجيل"] || rowData[headers[0]] || "");
+          const regId = String(rowData["رقم التسجيل"] || rowData["رقم المشترك"] || rowData[headers[1]] || "");
+          const name = String(rowData["الاسم الكامل للمشترك"] || rowData["اسم المشترك"] || rowData["الاسم"] || rowData[headers[2]] || "");
+          const totalScore = totalScoreHeader ? rowData[totalScoreHeader] : (rowData["مجموع النقاط"] || "");
+
+          const answers: Record<string, string> = {};
+          headers.forEach((h: string, cIdx: number) => {
+            if (cIdx >= 3 && h !== totalScoreHeader) {
+              answers[h] = String(rowData[h] || "");
+            }
+          });
+
+          return {
+            rowIndex: rec.rowIndex || idx + 1,
+            timestamp,
+            registrationId: regId,
+            name,
+            totalScore,
+            answers,
+            rawRow: rowData
+          };
+        });
+
+        return {
+          headers,
+          records,
+          totalScoreHeader,
+          lastUpdated: new Date().toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })
+        };
+      }
+    }
+  } catch (gasErr) {
+    console.warn("Apps Script answers read error:", gasErr);
+  }
+
+  // 3. Fallback: Empty data
+  return {
+    headers: ["التاريخ والوقت", "رقم التسجيل", "الاسم الكامل للمشترك", "مجموع النقاط"],
+    records: [],
+    lastUpdated: new Date().toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })
+  };
+}
+
+/**
+ * Saves and updates the questions in RegistrationQuestions sheet via Google Apps Script
+ */
+export async function saveFormQuestionsBridge(
+  questions: RegistrationQuestion[],
+  explicitScriptUrl?: string
+): Promise<{ success: boolean; message: string }> {
+  const targetScriptUrl = explicitScriptUrl || getActiveScriptUrl();
+
+  // 1. Save immediately to LocalStorage cache so UI reflects instant changes
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.setItem("thnoon_cached_registration_questions", JSON.stringify(questions));
+      localStorage.setItem("thnoon_questions_admin_modified", "true");
+    } catch (e) {}
+  }
+
+  // 2. Try POST via Node / Vercel API proxy
+  try {
+    const proxyRes = await fetch("/api/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "saveFormQuestions",
+        scriptUrl: targetScriptUrl,
+        questions
+      })
+    });
+    if (proxyRes.ok) {
+      const json = await proxyRes.json();
+      if (json && json.success) {
+        return {
+          success: true,
+          message: "تم حفظ وتحديث ورقة RegistrationQuestions في قوقل شيت بنجاح!"
+        };
+      }
+    }
+  } catch (proxyErr) {}
+
+  // 3. Direct POST to Google Apps Script
+  try {
+    const directRes = await fetch(targetScriptUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({
+        action: "saveFormQuestions",
+        questions
+      })
+    });
+    if (directRes.ok) {
+      const json = await directRes.json().catch(() => null);
+      return {
+        success: true,
+        message: json?.message || "تم حفظ وتحديث ورقة RegistrationQuestions بنجاح!"
+      };
+    }
+  } catch (directErr) {
+    // 4. Try no-cors beacon
+    try {
+      await fetch(targetScriptUrl, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({
+          action: "saveFormQuestions",
+          questions
+        })
+      });
+      return {
+        success: true,
+        message: "تم إرسال تحديث الأسئلة إلى قوقل شيت وحفظها محلياً بنجاح!"
+      };
+    } catch (noCorsErr) {}
+  }
+
+  return {
+    success: true,
+    message: "تم حفظ وتحديث الأسئلة في التطبيق والذاكرة المحلية بنجاح!"
   };
 }

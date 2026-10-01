@@ -17,7 +17,15 @@ import { FormHeader } from "./components/FormHeader";
 import { FormField } from "./components/FormField";
 import { SuccessReceipt } from "./components/SuccessReceipt";
 import { SheetSettingsModal } from "./components/SheetSettingsModal";
+import { AdminDashboard } from "./components/AdminDashboard";
 import { getEffectiveUiTranslations } from "./utils/translationStorage";
+import { SubscriberCard } from "./components/SubscriberCard";
+import {
+  detectSubscriberSession,
+  saveSubscriberSession,
+  clearSubscriberSession,
+  SubscriberData
+} from "./utils/subscriberSession";
 import {
   getActiveSpreadsheetId,
   getActiveScriptUrl,
@@ -28,7 +36,9 @@ import {
   setActiveDriveFolderId,
   saveTelegramConfig,
   submitRegistrationBridge,
-  fetchFormQuestionsBridge
+  fetchFormQuestionsBridge,
+  extractScoreFromAnswer,
+  isScoredQuestionType
 } from "./utils/googleBackendBridge";
 import {
   Send,
@@ -46,6 +56,124 @@ export default function App() {
   const [questions, setQuestions] = useState<RegistrationQuestion[]>(DEFAULT_FORM_QUESTIONS);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // View Router: "form" (default public form) or "admin" (Admin Dashboard)
+  const [currentView, setCurrentView] = useState<"form" | "admin">(() => {
+    if (typeof window !== "undefined") {
+      const path = window.location.pathname.toLowerCase();
+      const hash = window.location.hash.toLowerCase();
+      const search = window.location.search.toLowerCase();
+      if (
+        path.includes("/admin") ||
+        hash.includes("admin") ||
+        search.includes("view=admin") ||
+        search.includes("admin")
+      ) {
+        return "admin";
+      }
+    }
+    return "form";
+  });
+
+  // Keep route synced with browser back/forward and hash changes
+  useEffect(() => {
+    const handlePopState = () => {
+      const path = window.location.pathname.toLowerCase();
+      const hash = window.location.hash.toLowerCase();
+      const search = window.location.search.toLowerCase();
+      if (
+        path.includes("/admin") ||
+        hash.includes("admin") ||
+        search.includes("view=admin") ||
+        search.includes("admin")
+      ) {
+        setCurrentView("admin");
+      } else {
+        setCurrentView("form");
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    window.addEventListener("hashchange", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+      window.removeEventListener("hashchange", handlePopState);
+    };
+  }, []);
+
+  const navigateToAdmin = () => {
+    setCurrentView("admin");
+    if (typeof window !== "undefined") {
+      window.history.pushState(null, "", "/admin");
+    }
+  };
+
+  const navigateToForm = () => {
+    setCurrentView("form");
+    if (typeof window !== "undefined") {
+      window.history.pushState(null, "", "/");
+    }
+  };
+
+  // Subscriber Identity State (from URL, localStorage, cookies, or manual input/QR scan)
+  const [subscriber, setSubscriber] = useState<SubscriberData | null>(null);
+  const [manualSubId, setManualSubId] = useState("");
+  const [manualSubName, setManualSubName] = useState("");
+  const [subscriberError, setSubscriberError] = useState<string | null>(null);
+
+  // Auto-detect subscriber session on mount
+  useEffect(() => {
+    const session = detectSubscriberSession();
+    if (session) {
+      setSubscriber(session);
+      setManualSubId(session.id || "");
+      setManualSubName(session.name || "");
+    }
+  }, []);
+
+  const handleSaveSubscriber = (id: string, name: string) => {
+    const cleanId = id.trim();
+    const cleanName = name.trim();
+    if (!cleanId) return;
+
+    const saved = saveSubscriberSession(cleanId, cleanName, "manual");
+    setSubscriber(saved);
+    setManualSubId(cleanId);
+    setManualSubName(cleanName);
+    setSubscriberError(null);
+  };
+
+  const handleClearSubscriber = () => {
+    clearSubscriberSession();
+    setSubscriber(null);
+    setManualSubId("");
+    setManualSubName("");
+  };
+
+  // Helper: check if a question is asking for subscriber identity
+  const isIdentityQuestion = useCallback((q: RegistrationQuestion) => {
+    const text = (q.question || "").trim().toLowerCase();
+    return (
+      text === "الاسم" ||
+      text === "اسمك" ||
+      text === "الاسم الكامل" ||
+      text === "اسم المشترك" ||
+      text === "اسم الطالب" ||
+      text === "full name" ||
+      text === "name" ||
+      text === "رقم المشترك" ||
+      text === "رقم التسجيل" ||
+      text === "رقم القيد" ||
+      text === "subscriber id" ||
+      text === "id"
+    );
+  }, []);
+
+  // Filter out redundant name/ID fields since the Subscriber Card handles them exclusively
+  const displayedQuestions = useMemo(() => {
+    return questions.filter((q) => !isIdentityQuestion(q));
+  }, [questions, isIdentityQuestion]);
+
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submissionProgress, setSubmissionProgress] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState(false);
@@ -53,8 +181,8 @@ export default function App() {
     id: string;
     timestamp: string;
     name: string;
-    phone: string;
-    email: string;
+    phone?: string;
+    email?: string;
     answersList: Array<{ question: string; answer: string }>;
   } | null>(null);
 
@@ -131,7 +259,20 @@ export default function App() {
   const validateForm = (): boolean => {
     const newErrors: Record<string, string> = {};
 
-    questions.forEach((q) => {
+    // 1. Verify subscriber identity
+    const currentId = (subscriber?.id || manualSubId).trim();
+    const currentName = (subscriber?.name || manualSubName).trim();
+    if (!currentId || !currentName) {
+      setSubscriberError("يرجى تدوين رقم المشترك واسمك الكامل للمتابعة.");
+      const cardEl = document.getElementById("subscriber-card-container");
+      if (cardEl) {
+        cardEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      return false;
+    }
+
+    // 2. Verify questions
+    displayedQuestions.forEach((q) => {
       const qType = (q.type || "text").toLowerCase().trim();
       // Skip non-input elements
       if (
@@ -203,14 +344,23 @@ export default function App() {
     setIsSubmitting(true);
     setSubmissionProgress(t.submitting);
 
-    // Format answers array
-    const formattedAnswers: Array<{ question: string; answer: string; type?: string }> = [];
-    let subscriberName = "";
-    let subscriberPhone = "";
-    let subscriberEmail = "";
-    let attachmentData = "";
+    const activeSubId = (subscriber?.id || manualSubId).trim();
+    const activeSubName = (subscriber?.name || manualSubName).trim();
+    let detectedPhone = "";
+    let detectedEmail = "";
 
-    questions.forEach((q) => {
+    // Auto-persist manual entry
+    if (activeSubId && activeSubName && !subscriber) {
+      saveSubscriberSession(activeSubId, activeSubName, "manual");
+    }
+
+    // Format answers array: contains ONLY the actual question answers in strict order
+    const formattedAnswers: Array<{ question: string; answer: string; type?: string; score?: number }> = [];
+    let attachmentData = "";
+    let totalScore = 0;
+    let hasScoredQuestions = false;
+
+    displayedQuestions.forEach((q) => {
       const qType = (q.type || "text").toLowerCase().trim();
       if (
         qType === "image_display" ||
@@ -223,21 +373,29 @@ export default function App() {
       }
 
       const answerVal = answers[String(q.id)] || "";
+      const isScored = isScoredQuestionType(q.type);
+      let questionScore: number | undefined = undefined;
+
+      if (isScored) {
+        hasScoredQuestions = true;
+        const pts = extractScoreFromAnswer(answerVal);
+        totalScore += pts;
+        questionScore = pts;
+      }
+
       formattedAnswers.push({
         question: q.question,
         answer: answerVal,
-        type: q.type
+        type: q.type,
+        score: questionScore
       });
 
-      const qLow = q.question.toLowerCase();
-      if (!subscriberName && (qLow.includes("اسم") || qLow.includes("name"))) {
-        subscriberName = answerVal;
+      const qLow = (q.question || "").toLowerCase().trim();
+      if (!detectedPhone && (qType === "phone" || qLow.includes("هاتف") || qLow.includes("phone") || qLow.includes("واتساب"))) {
+        detectedPhone = answerVal;
       }
-      if (!subscriberPhone && (qLow.includes("هاتف") || qLow.includes("phone") || qLow.includes("واتساب"))) {
-        subscriberPhone = answerVal;
-      }
-      if (!subscriberEmail && (qLow.includes("ايميل") || qLow.includes("بريد") || qLow.includes("email"))) {
-        subscriberEmail = answerVal;
+      if (!detectedEmail && (qType === "email" || qLow.includes("ايميل") || qLow.includes("بريد") || qLow.includes("email"))) {
+        detectedEmail = answerVal;
       }
       if (!attachmentData && qType === "file" && answerVal) {
         attachmentData = answerVal;
@@ -246,11 +404,14 @@ export default function App() {
 
     try {
       const result = await submitRegistrationBridge({
-        name: subscriberName,
-        nameArabic: answers["2"] || subscriberName,
-        phone: subscriberPhone,
-        email: subscriberEmail,
+        registrationId: activeSubId,
+        subscriberId: activeSubId,
+        name: activeSubName,
+        phone: detectedPhone,
+        email: detectedEmail,
         answers: formattedAnswers,
+        totalScore,
+        hasScoredQuestions,
         attachment: attachmentData,
         scriptUrl,
         spreadsheetId,
@@ -263,11 +424,9 @@ export default function App() {
 
       if (result && result.success) {
         setSuccessData({
-          id: result.registrationId || `${Date.now().toString().slice(-8)}`,
+          id: result.registrationId || activeSubId,
           timestamp: result.timestamp || new Date().toLocaleString("ar-IQ"),
-          name: subscriberName,
-          phone: subscriberPhone,
-          email: subscriberEmail,
+          name: activeSubName,
           answersList: formattedAnswers
         });
         setIsSuccess(true);
@@ -312,11 +471,47 @@ export default function App() {
   };
 
   const answeredCount = Object.values(answers).filter((v) => v && v.trim().length > 0).length;
-  const inputQuestionsCount = questions.filter((q) => {
+  const inputQuestionsCount = displayedQuestions.filter((q) => {
     const type = (q.type || "").toLowerCase();
     return !["image_display", "button_title", "button_link", "صورة", "زر"].includes(type);
   }).length;
   const progressPercent = Math.min(100, Math.round((answeredCount / (inputQuestionsCount || 1)) * 100));
+
+  // If Admin View is active, render full Admin Dashboard
+  if (currentView === "admin") {
+    return (
+      <>
+        <AdminDashboard
+          questions={questions}
+          onUpdateQuestions={(newQuestions) => {
+            setQuestions(newQuestions);
+            setTranslationVersion((v) => v + 1);
+          }}
+          onOpenSettingsModal={() => setIsSettingsOpen(true)}
+          onNavigateToForm={navigateToForm}
+          spreadsheetId={spreadsheetId}
+          scriptUrl={scriptUrl}
+          driveFolderId={driveFolderId}
+          telegramConfig={telegramConfig}
+          currentLang={currentLang}
+        />
+
+        {/* Settings & Setup Guide Modal */}
+        <SheetSettingsModal
+          isOpen={isSettingsOpen}
+          onClose={() => setIsSettingsOpen(false)}
+          spreadsheetId={spreadsheetId}
+          scriptUrl={scriptUrl}
+          driveFolderId={driveFolderId}
+          telegramConfig={telegramConfig}
+          currentLang={currentLang}
+          questions={questions}
+          onTranslationsUpdated={() => setTranslationVersion((v) => v + 1)}
+          onSave={handleSaveSettings}
+        />
+      </>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col selection:bg-emerald-500 selection:text-white">
@@ -325,6 +520,7 @@ export default function App() {
         currentLang={currentLang}
         onLanguageChange={handleLanguageChange}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenAdmin={navigateToAdmin}
         onRefreshQuestions={() => loadQuestions()}
         isRefreshing={isRefreshingQuestions}
         spreadsheetId={spreadsheetId}
@@ -355,6 +551,26 @@ export default function App() {
               </p>
             </div>
 
+            {/* Subscriber Identity Card */}
+            <div id="subscriber-card-container">
+              <SubscriberCard
+                subscriber={subscriber}
+                onSaveSubscriber={handleSaveSubscriber}
+                onClearSubscriber={handleClearSubscriber}
+                error={subscriberError}
+                manualId={manualSubId}
+                setManualId={(val) => {
+                  setManualSubId(val);
+                  if (subscriberError) setSubscriberError(null);
+                }}
+                manualName={manualSubName}
+                setManualName={(val) => {
+                  setManualSubName(val);
+                  if (subscriberError) setSubscriberError(null);
+                }}
+              />
+            </div>
+
             {/* Validation Notice if errors */}
             {Object.keys(errors).length > 0 && (
               <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-3 animate-in fade-in">
@@ -380,7 +596,7 @@ export default function App() {
                 aria-hidden="true"
               />
 
-              {questions.map((question, index) => (
+              {displayedQuestions.map((question, index) => (
                 <FormField
                   key={`${question.id}-${translationVersion}`}
                   question={question}
@@ -428,7 +644,16 @@ export default function App() {
       <footer className="w-full py-6 border-t border-slate-200 bg-white text-center text-xs text-slate-400">
         <div className="max-w-5xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <span>مشروع استمارة تسجيل متكامل متصل بـ Google Sheets & Drive</span>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 flex-wrap justify-center">
+            <button
+              type="button"
+              onClick={navigateToAdmin}
+              className="text-slate-700 hover:text-emerald-700 font-bold flex items-center gap-1 transition-colors"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+              <span>لوحة الإدارة (Admin)</span>
+            </button>
+            <span className="text-slate-300">|</span>
             <button
               type="button"
               onClick={() => setIsSettingsOpen(true)}
