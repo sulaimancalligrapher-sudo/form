@@ -193,7 +193,7 @@ app.post("/api/register", async (req, res) => {
       payload.scriptUrl ||
       process.env.VITE_GOOGLE_SCRIPT_URL ||
       process.env.GOOGLE_SCRIPT_URL ||
-      "https://script.google.com/macros/s/AKfycbxkE4_o7pqoELsNkyJRP_bAy7Du51s2ztJatTD9wayK08Pwj_28RyOfGiMQomlIyIw_/exec";
+      "https://script.google.com/macros/s/AKfycbwO6_PHYlPNgCzyDv2waJVm33D49qXTwl_ds2jkHdWXz3cgvwzdUMdNNq5x98H4aZJw/exec";
 
     const gasResponse = await fetch(scriptUrl, {
       method: "POST",
