@@ -3,6 +3,7 @@ import { FormLang, RegistrationQuestion, TelegramConfig } from "../types";
 import { UI_TRANSLATIONS } from "../data/defaultConfig";
 import { GOOGLE_APPS_SCRIPT_CODE } from "../data/appsScriptCode";
 import { TranslationSettingsTab } from "./TranslationSettingsTab";
+import { AnalysisSettingsTab } from "./AnalysisSettingsTab";
 import {
   getHeaderLogoUrl,
   saveHeaderLogoUrl,
@@ -68,7 +69,7 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
   onTranslationsUpdated,
   onSave
 }) => {
-  const [activeTab, setActiveTab] = useState<"settings" | "translations" | "code" | "deploy">("settings");
+  const [activeTab, setActiveTab] = useState<"settings" | "analysis" | "translations" | "code" | "deploy">("settings");
   const [sheetId, setSheetId] = useState(initialSpreadsheetId);
   const [scriptUrl, setScriptUrl] = useState(initialScriptUrl);
   const [driveFolderId, setDriveFolderId] = useState(initialDriveFolderId);
@@ -227,6 +228,17 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
             }`}
           >
             ⚙️ إعدادات الربط والشيت
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("analysis")}
+            className={`py-3 px-3 text-xs sm:text-sm font-bold border-b-2 whitespace-nowrap transition-all ${
+              activeTab === "analysis"
+                ? "border-emerald-600 text-emerald-700"
+                : "border-transparent text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            🧠 إعدادات التحليل والمشتركين
           </button>
           <button
             type="button"
@@ -650,6 +662,11 @@ export const SheetSettingsModal: React.FC<SheetSettingsModalProps> = ({
                 )}
               </div>
             </div>
+          )}
+
+          {/* TAB: Analysis & Subscribers Gate Settings */}
+          {activeTab === "analysis" && (
+            <AnalysisSettingsTab darkMode={false} />
           )}
 
           {/* TAB: Translations Settings */}

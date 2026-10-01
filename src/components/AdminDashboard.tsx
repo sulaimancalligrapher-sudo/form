@@ -9,16 +9,22 @@ import {
   SheetAnswerRecord,
   SheetAnswersData,
   TelegramConfig,
-  FormLang
+  FormLang,
+  SubscriberRecord
 } from "../types";
 import {
   fetchRegistrationAnswersBridge,
   saveFormQuestionsBridge,
   fetchFormQuestionsBridge,
+  fetchSubscribersSheetBridge,
+  updateSubscriberRowBridge,
+  saveSubscribersToSheetBridge,
   getActiveSpreadsheetId,
   getActiveScriptUrl,
   isScoredQuestionType
 } from "../utils/googleBackendBridge";
+import { analyzeSubscriberAnswers } from "../utils/aiAnalyzer";
+import { AnalysisSettingsTab } from "./AnalysisSettingsTab";
 import {
   LayoutDashboard,
   FileQuestion,
@@ -53,7 +59,10 @@ import {
   ChevronRight,
   ShieldCheck,
   ListChecks,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Users,
+  Unlock,
+  Loader2
 } from "lucide-react";
 
 interface AdminDashboardProps {
@@ -78,7 +87,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   driveFolderId,
   telegramConfig
 }) => {
-  const [activeTab, setActiveTab] = useState<"questions" | "answers" | "share">("answers");
+  const [activeTab, setActiveTab] = useState<
+    "subscribers" | "analysis_settings" | "questions" | "answers" | "share"
+  >("subscribers");
+
+  // Subscribers sheet (ورقة المشتركين) state
+  const [subscribersList, setSubscribersList] = useState<SubscriberRecord[]>([]);
+  const [loadingSubscribers, setLoadingSubscribers] = useState<boolean>(true);
+  const [subscribersSearch, setSubscribersSearch] = useState<string>("");
+  const [selectedSubscriber, setSelectedSubscriber] = useState<SubscriberRecord | null>(null);
+  const [newSubId, setNewSubId] = useState<string>("");
+  const [newSubName, setNewSubName] = useState<string>("");
+  const [analyzingStudentId, setAnalyzingStudentId] = useState<string | null>(null);
+  const [subscribersNotice, setSubscribersNotice] = useState<{ text: string; success: boolean } | null>(null);
 
   // Answers sheet state
   const [answersData, setAnswersData] = useState<SheetAnswersData>({
@@ -122,9 +143,186 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
+  // Load subscribers from ورقة المشتركين
+  const loadSubscribers = async (force = false) => {
+    setLoadingSubscribers(true);
+    try {
+      const list = await fetchSubscribersSheetBridge(scriptUrl, spreadsheetId, force);
+      setSubscribersList(list);
+    } catch (e) {
+      console.error("Failed to load subscribers sheet:", e);
+    } finally {
+      setLoadingSubscribers(false);
+    }
+  };
+
   useEffect(() => {
     loadAnswers();
+    loadSubscribers();
   }, [spreadsheetId, scriptUrl]);
+
+  // Add new subscriber to ورقة المشتركين
+  const handleAddSubscriber = async () => {
+    const cleanId = newSubId.trim();
+    const cleanName = newSubName.trim();
+    if (!cleanId || !cleanName) {
+      setSubscribersNotice({
+        text: "يرجى إدخال رقم المشترك (Student ID) واسم المشترك (Student Name) لإضافته.",
+        success: false
+      });
+      setTimeout(() => setSubscribersNotice(null), 3500);
+      return;
+    }
+
+    const newRecord: SubscriberRecord = {
+      rowIndex: subscribersList.length + 2,
+      sequence: subscribersList.length + 1,
+      studentId: cleanId,
+      studentName: cleanName,
+      totalScore: "",
+      combinedAnswers: "",
+      aiAnalysis: "",
+      hasAnswered: false
+    };
+
+    const updated = [...subscribersList, newRecord];
+    setSubscribersList(updated);
+    setNewSubId("");
+    setNewSubName("");
+
+    await updateSubscriberRowBridge(cleanId, cleanName, {
+      totalScore: "",
+      combinedAnswers: "",
+      aiAnalysis: "",
+      hasAnswered: false
+    }, scriptUrl);
+
+    setSubscribersNotice({
+      text: `تمت إضافة المشترك «${cleanName}» (رقم: ${cleanId}) إلى ورقة المشتركين بنجاح!`,
+      success: true
+    });
+    setTimeout(() => setSubscribersNotice(null), 4000);
+  };
+
+  // Run or re-run AI analysis for a subscriber and save to Column F of their row in المشتركين
+  const handleAnalyzeSubscriber = async (sub: SubscriberRecord) => {
+    setAnalyzingStudentId(sub.studentId);
+    try {
+      const parts = (sub.combinedAnswers || "")
+        .split("|||")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      const inputQuestions = localQuestions.filter((q) => {
+        const t = (q.type || "").toLowerCase();
+        return !["image_display", "button_title", "button_link", "صورة", "زر"].includes(t);
+      });
+
+      const reconstructedAnswers = parts.map((ans, idx) => ({
+        question: inputQuestions[idx]?.question || `سؤال ${idx + 1}`,
+        answer: ans
+      }));
+
+      const analysisText = await analyzeSubscriberAnswers({
+        studentId: sub.studentId,
+        studentName: sub.studentName,
+        totalScore: sub.totalScore,
+        answers: reconstructedAnswers,
+        combinedAnswers: sub.combinedAnswers
+      });
+
+      await updateSubscriberRowBridge(
+        sub.studentId,
+        sub.studentName,
+        {
+          totalScore: sub.totalScore,
+          combinedAnswers: sub.combinedAnswers,
+          aiAnalysis: analysisText,
+          hasAnswered: sub.hasAnswered
+        },
+        scriptUrl
+      );
+
+      const updatedList = subscribersList.map((item) =>
+        item.studentId === sub.studentId ? { ...item, aiAnalysis: analysisText } : item
+      );
+      setSubscribersList(updatedList);
+      if (selectedSubscriber && selectedSubscriber.studentId === sub.studentId) {
+        setSelectedSubscriber({ ...selectedSubscriber, aiAnalysis: analysisText });
+      }
+
+      setSubscribersNotice({
+        text: `تم تحليل إجابات «${sub.studentName}» بالذكاء الاصطناعي وحفظ التقرير في العمود السادس (F) بنفس صفه!`,
+        success: true
+      });
+      setTimeout(() => setSubscribersNotice(null), 4500);
+    } catch (e: any) {
+      setSubscribersNotice({
+        text: "حدث خطأ أثناء تحليل الإجابات: " + (e?.message || ""),
+        success: false
+      });
+      setTimeout(() => setSubscribersNotice(null), 4000);
+    } finally {
+      setAnalyzingStudentId(null);
+    }
+  };
+
+  // Clear a subscriber's previous answer so they can answer the questionnaire again
+  const handleResetSubscriberAnswer = async (sub: SubscriberRecord) => {
+    await updateSubscriberRowBridge(
+      sub.studentId,
+      sub.studentName,
+      {
+        totalScore: "",
+        combinedAnswers: "",
+        aiAnalysis: "",
+        hasAnswered: false
+      },
+      scriptUrl
+    );
+
+    const updatedList = subscribersList.map((item) =>
+      item.studentId === sub.studentId
+        ? { ...item, totalScore: "", combinedAnswers: "", aiAnalysis: "", hasAnswered: false }
+        : item
+    );
+    setSubscribersList(updatedList);
+    if (selectedSubscriber && selectedSubscriber.studentId === sub.studentId) {
+      setSelectedSubscriber({
+        ...selectedSubscriber,
+        totalScore: "",
+        combinedAnswers: "",
+        aiAnalysis: "",
+        hasAnswered: false
+      });
+    }
+
+    setSubscribersNotice({
+      text: `تم مسح الإجابة السابقة للمشترك «${sub.studentName}» والسماح له بالإجابة من جديد!`,
+      success: true
+    });
+    setTimeout(() => setSubscribersNotice(null), 4000);
+  };
+
+  const filteredSubscribers = useMemo(() => {
+    if (!subscribersSearch.trim()) return subscribersList;
+    const q = subscribersSearch.toLowerCase().trim();
+    return subscribersList.filter(
+      (s) =>
+        s.studentId.toLowerCase().includes(q) ||
+        s.studentName.toLowerCase().includes(q) ||
+        (s.combinedAnswers || "").toLowerCase().includes(q) ||
+        (s.aiAnalysis || "").toLowerCase().includes(q)
+    );
+  }, [subscribersList, subscribersSearch]);
+
+  const subscribersStats = useMemo(() => {
+    const total = subscribersList.length;
+    const answered = subscribersList.filter((s) => s.hasAnswered).length;
+    const pending = Math.max(0, total - answered);
+    const analyzed = subscribersList.filter((s) => s.aiAnalysis && s.aiAnalysis.trim().length > 5).length;
+    return { total, answered, pending, analyzed };
+  }, [subscribersList]);
 
   // Reload questions from Sheet
   const reloadQuestionsFromSheet = async () => {
@@ -461,39 +659,53 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       <div className="border-b border-slate-800 bg-slate-950/40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6">
           <div className="flex items-center gap-2 overflow-x-auto py-2.5">
-            {/* Tab 1: RegistrationAnswers */}
+            {/* Tab 0: Subscribers Sheet & AI Analysis (ورقة المشتركين) */}
             <button
               type="button"
-              onClick={() => setActiveTab("answers")}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
-                activeTab === "answers"
+              onClick={() => setActiveTab("subscribers")}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap ${
+                activeTab === "subscribers"
                   ? "bg-emerald-600 text-white shadow-md shadow-emerald-900/30"
                   : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"
               }`}
             >
-              <TableProperties className="w-4 h-4" />
-              <span>سجل الإجابات والنتائج (RegistrationAnswers)</span>
+              <Users className="w-4 h-4" />
+              <span>ورقة المشتركين والتحليل الذكي (المشتركين)</span>
               <span
                 className={`px-2 py-0.5 rounded-full text-[11px] font-mono ${
-                  activeTab === "answers" ? "bg-emerald-700 text-white" : "bg-slate-800 text-slate-400"
+                  activeTab === "subscribers" ? "bg-emerald-700 text-white" : "bg-slate-800 text-slate-400"
                 }`}
               >
-                {answersData.records.length}
+                {subscribersList.length}
               </span>
             </button>
 
-            {/* Tab 2: RegistrationQuestions */}
+            {/* Tab 0b: Analysis & Login Gate Settings */}
+            <button
+              type="button"
+              onClick={() => setActiveTab("analysis_settings")}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap ${
+                activeTab === "analysis_settings"
+                  ? "bg-emerald-600 text-white shadow-md shadow-emerald-900/30"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"
+              }`}
+            >
+              <Sparkles className="w-4 h-4" />
+              <span>إعدادات التحليل وبوابة الدخول</span>
+            </button>
+
+            {/* Tab 1: RegistrationQuestions */}
             <button
               type="button"
               onClick={() => setActiveTab("questions")}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap ${
                 activeTab === "questions"
                   ? "bg-emerald-600 text-white shadow-md shadow-emerald-900/30"
                   : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"
               }`}
             >
               <FileQuestion className="w-4 h-4" />
-              <span>إدارة ورقة الأسئلة (RegistrationQuestions)</span>
+              <span>إدارة الأسئلة (RegistrationQuestions)</span>
               <span
                 className={`px-2 py-0.5 rounded-full text-[11px] font-mono ${
                   activeTab === "questions" ? "bg-emerald-700 text-white" : "bg-slate-800 text-slate-400"
@@ -503,18 +715,39 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </span>
             </button>
 
+            {/* Tab 2: RegistrationAnswers */}
+            <button
+              type="button"
+              onClick={() => setActiveTab("answers")}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap ${
+                activeTab === "answers"
+                  ? "bg-emerald-600 text-white shadow-md shadow-emerald-900/30"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"
+              }`}
+            >
+              <TableProperties className="w-4 h-4" />
+              <span>سجل الإجابات التفصيلي</span>
+              <span
+                className={`px-2 py-0.5 rounded-full text-[11px] font-mono ${
+                  activeTab === "answers" ? "bg-emerald-700 text-white" : "bg-slate-800 text-slate-400"
+                }`}
+              >
+                {answersData.records.length}
+              </span>
+            </button>
+
             {/* Tab 3: Share Links & Quick Tools */}
             <button
               type="button"
               onClick={() => setActiveTab("share")}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap ${
                 activeTab === "share"
                   ? "bg-emerald-600 text-white shadow-md shadow-emerald-900/30"
                   : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"
               }`}
             >
               <Share2 className="w-4 h-4" />
-              <span>مشاركة الروابط وإعدادات النشر</span>
+              <span>مشاركة الروابط</span>
             </button>
           </div>
         </div>
@@ -522,6 +755,309 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       {/* Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 space-y-6">
+        {/* ========================================================================= */}
+        {/* TAB 0: SUBSCRIBERS SHEET & AI ANALYSIS (ورقة المشتركين والنتائج والتحليل) */}
+        {/* ========================================================================= */}
+        {activeTab === "subscribers" && (
+          <div className="space-y-5">
+            {/* KPI Summary Cards */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+              <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80 space-y-1">
+                <span className="text-xs text-slate-400 font-medium">إجمالي المشتركين المسجلين</span>
+                <div className="text-2xl sm:text-3xl font-bold text-white flex items-baseline gap-2">
+                  <span>{subscribersStats.total}</span>
+                  <span className="text-xs text-slate-500 font-normal">طالب في ورقة المشتركين</span>
+                </div>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80 space-y-1">
+                <span className="text-xs text-slate-400 font-medium">أجابوا على الاستبيان</span>
+                <div className="text-2xl sm:text-3xl font-bold text-emerald-400 flex items-baseline gap-2">
+                  <span>{subscribersStats.answered}</span>
+                  <span className="text-xs text-slate-500 font-normal">مكتمل (مقفول التكرار)</span>
+                </div>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80 space-y-1">
+                <span className="text-xs text-slate-400 font-medium">بانتظار الإجابة</span>
+                <div className="text-2xl sm:text-3xl font-bold text-amber-400 flex items-baseline gap-2">
+                  <span>{subscribersStats.pending}</span>
+                  <span className="text-xs text-slate-500 font-normal">لم يجيبوا بعد</span>
+                </div>
+              </div>
+
+              <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80 space-y-1">
+                <span className="text-xs text-slate-400 font-medium">تقارير تحليل الذكاء الاصطناعي</span>
+                <div className="text-2xl sm:text-3xl font-bold text-purple-400 flex items-baseline gap-2">
+                  <span>{subscribersStats.analyzed}</span>
+                  <span className="text-xs text-slate-500 font-normal">تحليل مسجل في العمود F</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Notice Toast */}
+            {subscribersNotice && (
+              <div
+                className={`p-3.5 rounded-2xl border text-xs font-bold flex items-center justify-between gap-3 animate-in fade-in ${
+                  subscribersNotice.success
+                    ? "bg-emerald-950/80 border-emerald-700 text-emerald-200"
+                    : "bg-rose-950/80 border-rose-700 text-rose-200"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  {subscribersNotice.success ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  )}
+                  <span>{subscribersNotice.text}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSubscribersNotice(null)}
+                  className="text-slate-400 hover:text-white"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {/* Quick Add Subscriber Bar + Search & Sync */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 bg-slate-950/50 p-4 rounded-2xl border border-slate-800">
+              {/* Quick Add Subscriber to المشتركين */}
+              <div className="lg:col-span-7 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                <input
+                  type="text"
+                  value={newSubId}
+                  onChange={(e) => setNewSubId(e.target.value)}
+                  placeholder="رقم المشترك (Student ID)..."
+                  className="sm:w-40 px-3 py-2 rounded-xl bg-slate-900 border border-slate-750 focus:border-emerald-500 text-xs text-slate-100 outline-none"
+                />
+                <input
+                  type="text"
+                  value={newSubName}
+                  onChange={(e) => setNewSubName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleAddSubscriber();
+                    }
+                  }}
+                  placeholder="اسم المشترك الكامل (Student Name)..."
+                  className="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-750 focus:border-emerald-500 text-xs text-slate-100 outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddSubscriber}
+                  className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all cursor-pointer shrink-0"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>إضافة مشترك للورقة</span>
+                </button>
+              </div>
+
+              {/* Search & Refresh */}
+              <div className="lg:col-span-5 flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Search className="w-3.5 h-3.5 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={subscribersSearch}
+                    onChange={(e) => setSubscribersSearch(e.target.value)}
+                    placeholder="بحث بالرقم أو الاسم أو التحليل..."
+                    className="w-full pl-3 pr-8 py-2 rounded-xl bg-slate-900 border border-slate-750 focus:border-emerald-500 text-xs text-slate-200 outline-none"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => loadSubscribers(true)}
+                  disabled={loadingSubscribers}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-850 hover:bg-slate-800 text-slate-200 text-xs font-bold border border-slate-700 transition-all cursor-pointer shrink-0"
+                  title="قراءة أحدث بيانات ورقة المشتركين من قوقل شيت"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingSubscribers ? "animate-spin text-emerald-400" : ""}`} />
+                  <span>تحديث</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const res = await saveSubscribersToSheetBridge(subscribersList, scriptUrl);
+                    setSubscribersNotice({ text: res.message, success: res.success });
+                    setTimeout(() => setSubscribersNotice(null), 4000);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 text-xs font-bold transition-all cursor-pointer shrink-0"
+                  title="مزامنة وإنشاء ورقة المشتركين في قوقل شيت"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>مزامنة الشيت</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Subscribers 6-Column Table */}
+            <div className="bg-slate-950/60 rounded-2xl border border-slate-800 overflow-hidden shadow-sm">
+              {loadingSubscribers && subscribersList.length === 0 ? (
+                <div className="p-12 text-center text-slate-400 space-y-3">
+                  <RefreshCw className="w-8 h-8 animate-spin mx-auto text-emerald-500" />
+                  <p className="text-sm font-semibold">جاري قراءة ورقة (المشتركين) من قوقل شيت...</p>
+                </div>
+              ) : filteredSubscribers.length === 0 ? (
+                <div className="p-12 text-center text-slate-400 space-y-2.5">
+                  <Users className="w-9 h-9 mx-auto text-slate-600" />
+                  <p className="text-sm font-bold text-slate-200">
+                    {subscribersSearch
+                      ? "لا يوجد مشترك يطابق بحثك"
+                      : "ورقة (المشتركين) فارغة حالياً أو لم تتم إضافة طلاب بعد"}
+                  </p>
+                  <p className="text-xs text-slate-500 max-w-lg mx-auto leading-relaxed">
+                    يمكنك إضافة المشتركين (Student ID + Student Name) من الشريط أعلاه أو مباشرة داخل ورقة <strong>المشتركين</strong> في ملف قوقل شيت، وعندما يجيب كل طالب ستُسجل نقاطه وإجاباته وتحليله الذكي في نفس صفه تلقائياً.
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-right text-xs">
+                    <thead>
+                      <tr className="bg-slate-900 border-b border-slate-800 text-slate-300 font-bold">
+                        <th className="py-3 px-3 w-14 text-center whitespace-nowrap">
+                          العمود 1: التسلسل
+                        </th>
+                        <th className="py-3 px-3 whitespace-nowrap">
+                          العمود 2: Student ID
+                        </th>
+                        <th className="py-3 px-3 whitespace-nowrap">
+                          العمود 3: Student Name
+                        </th>
+                        <th className="py-3 px-3 text-center whitespace-nowrap">
+                          العمود 4: مجموع النقاط
+                        </th>
+                        <th className="py-3 px-3">
+                          العمود 5: الإجابات المجمعة (|||)
+                        </th>
+                        <th className="py-3 px-3">
+                          العمود 6: تحليل الذكاء الاصطناعي
+                        </th>
+                        <th className="py-3 px-3 text-center whitespace-nowrap">
+                          الحالة والإجراءات
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-850">
+                      {filteredSubscribers.map((sub, idx) => {
+                        const isAnalyzingThis = analyzingStudentId === sub.studentId;
+                        return (
+                          <tr
+                            key={sub.studentId || idx}
+                            onClick={() => setSelectedSubscriber(sub)}
+                            className="hover:bg-slate-900/60 transition-colors cursor-pointer group"
+                          >
+                            {/* Col 1: Sequence */}
+                            <td className="py-3 px-3 text-center font-mono text-slate-400">
+                              {sub.sequence || idx + 1}
+                            </td>
+
+                            {/* Col 2: Student ID */}
+                            <td className="py-3 px-3 font-mono font-bold text-emerald-400 whitespace-nowrap">
+                              {sub.studentId}
+                            </td>
+
+                            {/* Col 3: Student Name */}
+                            <td className="py-3 px-3 font-bold text-white whitespace-nowrap">
+                              {sub.studentName}
+                            </td>
+
+                            {/* Col 4: Total Score */}
+                            <td className="py-3 px-3 text-center whitespace-nowrap">
+                              {sub.totalScore !== undefined && String(sub.totalScore).trim() !== "" ? (
+                                <span className="inline-flex items-center justify-center px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold font-mono text-xs">
+                                  {sub.totalScore}
+                                </span>
+                              ) : (
+                                <span className="text-slate-600">-</span>
+                              )}
+                            </td>
+
+                            {/* Col 5: Combined Answers (|||) */}
+                            <td className="py-3 px-3 text-slate-300 max-w-xs truncate font-mono text-[11px]">
+                              {sub.combinedAnswers ? (
+                                <span title={sub.combinedAnswers}>{sub.combinedAnswers}</span>
+                              ) : (
+                                <span className="text-slate-600 font-sans">لم يجب بعد</span>
+                              )}
+                            </td>
+
+                            {/* Col 6: AI Analysis */}
+                            <td className="py-3 px-3 text-slate-300 max-w-xs truncate">
+                              {sub.aiAnalysis ? (
+                                <span className="text-purple-300 font-medium">
+                                  {sub.aiAnalysis.replace(/\n+/g, " — ")}
+                                </span>
+                              ) : (
+                                <span className="text-slate-600">-</span>
+                              )}
+                            </td>
+
+                            {/* Actions */}
+                            <td
+                              className="py-3 px-3 text-center whitespace-nowrap"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <div className="flex items-center justify-center gap-1.5">
+                                {sub.hasAnswered ? (
+                                  <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
+                                    أجاب ✅
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-md bg-slate-800 text-slate-400 text-[10px]">
+                                    بانتظار الإجابة
+                                  </span>
+                                )}
+
+                                {sub.hasAnswered && (
+                                  <button
+                                    type="button"
+                                    disabled={isAnalyzingThis}
+                                    onClick={() => handleAnalyzeSubscriber(sub)}
+                                    className="px-2.5 py-1 rounded-lg bg-purple-600/20 hover:bg-purple-600 text-purple-300 hover:text-white border border-purple-500/30 transition-all text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                                    title="تحليل إجابات المشترك بالذكاء الاصطناعي وحفظها في العمود السادس"
+                                  >
+                                    {isAnalyzingThis ? (
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                    ) : (
+                                      <Sparkles className="w-3 h-3" />
+                                    )}
+                                    <span>تحليل ذكي</span>
+                                  </button>
+                                )}
+
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedSubscriber(sub)}
+                                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-emerald-600 text-slate-300 hover:text-white transition-all text-[11px] font-semibold cursor-pointer"
+                                >
+                                  التفاصيل
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* TAB 0b: ANALYSIS & LOGIN GATE SETTINGS (إعدادات التحليل وبوابة الدخول)     */}
+        {/* ========================================================================= */}
+        {activeTab === "analysis_settings" && (
+          <AnalysisSettingsTab darkMode={true} />
+        )}
+
         {/* ========================================================================= */}
         {/* TAB 1: REGISTRATION ANSWERS (سجل الإجابات والنتائج)                       */}
         {/* ========================================================================= */}
@@ -1087,6 +1623,204 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         )}
       </main>
+
+      {/* ========================================================================= */}
+      {/* MODAL: SUBSCRIBER ROW & AI ANALYSIS VIEW (عرض تفاصيل وتحليل المشترك)       */}
+      {/* ========================================================================= */}
+      {selectedSubscriber && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
+            {/* Header */}
+            <div className="p-5 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center">
+                  <User className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-white">
+                    {selectedSubscriber.studentName}
+                  </h3>
+                  <div className="flex items-center gap-2 text-xs text-slate-400 font-mono mt-0.5">
+                    <span>التسلسل: {selectedSubscriber.sequence}</span>
+                    <span>•</span>
+                    <span className="text-emerald-400 font-bold">
+                      Student ID: {selectedSubscriber.studentId}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSelectedSubscriber(null)}
+                className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 overflow-y-auto space-y-5">
+              {/* Row Columns 4, 5, 6 Overview */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="p-4 rounded-2xl bg-emerald-950/40 border border-emerald-800/60 flex items-center justify-between">
+                  <div>
+                    <span className="text-[11px] text-emerald-400 font-bold block">
+                      العمود الرابع (D)
+                    </span>
+                    <h4 className="font-bold text-sm text-white mt-0.5">
+                      عدد مجموع النقاط
+                    </h4>
+                  </div>
+                  <div className="text-2xl font-black font-mono text-emerald-400">
+                    {selectedSubscriber.totalScore !== undefined &&
+                    String(selectedSubscriber.totalScore).trim() !== ""
+                      ? selectedSubscriber.totalScore
+                      : "0"}
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
+                  <div>
+                    <span className="text-[11px] text-slate-400 font-bold block">
+                      حالة الاستبيان للمشترك
+                    </span>
+                    <h4 className="font-bold text-sm text-white mt-0.5">
+                      {selectedSubscriber.hasAnswered
+                        ? "أجاب (مقفول عن التكرار)"
+                        : "لم يجب بعد (متاح له الدخول)"}
+                    </h4>
+                  </div>
+                  {selectedSubscriber.hasAnswered && (
+                    <button
+                      type="button"
+                      onClick={() => handleResetSubscriberAnswer(selectedSubscriber)}
+                      className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-slate-950 border border-amber-500/30 text-xs font-bold flex items-center gap-1 transition-all cursor-pointer"
+                      title="مسح الإجابة السابقة والسماح للمشترك بالإجابة مرة أخرى"
+                    >
+                      <Unlock className="w-3.5 h-3.5" />
+                      <span>السماح بالإجابة مجدداً</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Column 5: Combined Answers (|||) */}
+              <div className="space-y-2">
+                <h4 className="text-xs font-bold text-slate-300 flex items-center justify-between">
+                  <span>العمود الخامس (E): تجميع كل الإجابات في خلية واحدة بفاصل (|||)</span>
+                </h4>
+                <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 font-mono text-xs text-slate-200 leading-relaxed break-words">
+                  {selectedSubscriber.combinedAnswers || (
+                    <span className="text-slate-500 font-sans">
+                      لا توجد إجابات مسجلة لهذا المشترك بعد.
+                    </span>
+                  )}
+                </div>
+
+                {/* Parsed Individual Answers Preview */}
+                {selectedSubscriber.combinedAnswers && (
+                  <div className="grid grid-cols-1 gap-1.5 pt-1">
+                    {selectedSubscriber.combinedAnswers
+                      .split("|||")
+                      .map((part, pIdx) => part.trim())
+                      .filter(Boolean)
+                      .map((ansPart, pIdx) => (
+                        <div
+                          key={pIdx}
+                          className="px-3 py-2 rounded-xl bg-slate-950/50 border border-slate-850 flex items-start gap-2 text-xs"
+                        >
+                          <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-mono text-[10px] shrink-0">
+                            ج{pIdx + 1}
+                          </span>
+                          <span className="text-slate-200 font-medium">{ansPart}</span>
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Column 6: AI Analysis Report */}
+              <div className="space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="text-xs font-bold text-purple-300 flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4 text-purple-400" />
+                    <span>العمود السادس (F): تحليل الذكاء الاصطناعي (خاص للإدارة)</span>
+                  </h4>
+
+                  <button
+                    type="button"
+                    disabled={analyzingStudentId === selectedSubscriber.studentId}
+                    onClick={() => handleAnalyzeSubscriber(selectedSubscriber)}
+                    className="px-3.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-sm disabled:opacity-50"
+                  >
+                    {analyzingStudentId === selectedSubscriber.studentId ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>جاري قراءة الإجابات وتحليلها...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>
+                          {selectedSubscriber.aiAnalysis
+                            ? "إعادة تحليل الإجابات بالذكاء الاصطناعي"
+                            : "توليد تحليل الذكاء الاصطناعي الآن"}
+                        </span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-purple-950/25 border border-purple-800/50 text-xs text-slate-100 leading-relaxed whitespace-pre-line">
+                  {selectedSubscriber.aiAnalysis ? (
+                    selectedSubscriber.aiAnalysis
+                  ) : (
+                    <span className="text-slate-400">
+                      لم يتم توليد تحليل ذكي لهذا المشترك بعد. اضغط على زر «توليد تحليل الذكاء الاصطناعي الآن» أعلاه لقراءة إجاباته وتطبيق المعطيات الـ 11 وحفظها في الشيت.
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-slate-800 bg-slate-950/60 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(
+                    `المشترك: ${selectedSubscriber.studentName} (${selectedSubscriber.studentId})\nمجموع النقاط: ${selectedSubscriber.totalScore || 0}\nالإجابات: ${selectedSubscriber.combinedAnswers || "-"}\n\n${selectedSubscriber.aiAnalysis || ""}`
+                  );
+                  setCopiedRecordSummary(true);
+                  setTimeout(() => setCopiedRecordSummary(false), 2500);
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 text-xs font-semibold transition-all cursor-pointer"
+              >
+                {copiedRecordSummary ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    <span className="text-emerald-400">تم نسخ التقرير الكامل!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>نسخ بطاقة وتحليل المشترك</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSelectedSubscriber(null)}
+                className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all cursor-pointer"
+              >
+                إغلاق
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ========================================================================= */}
       {/* MODAL: SUBMISSION DETAILS VIEW (عرض تفاصيل التسجيل)                       */}

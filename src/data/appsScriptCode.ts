@@ -44,6 +44,12 @@ function doGet(e) {
         success: true,
         records: records
       };
+    } else if (action === "getSubscribers") {
+      var subscribers = getSubscribersFromSheet();
+      outputData = {
+        success: true,
+        subscribers: subscribers
+      };
     } else if (action === "translate") {
       var textToTrans = (e && e.parameter && e.parameter.text) ? e.parameter.text : "";
       var toLang = (e && e.parameter && e.parameter.targetLang) ? e.parameter.targetLang : "en";
@@ -91,8 +97,12 @@ function doPost(e) {
   try {
     var postData = {};
     if (e && e.postData && e.postData.contents) {
+      var rawContents = String(e.postData.contents).trim();
+      if (rawContents.slice(-1) === "=") {
+        rawContents = rawContents.slice(0, -1).trim();
+      }
       try {
-        postData = JSON.parse(e.postData.contents);
+        postData = JSON.parse(rawContents);
       } catch (jsonErr) {
         // Handle URL-encoded or raw form-data fallback
         postData = e.parameter || {};
@@ -141,6 +151,20 @@ function doPost(e) {
     if (action === "saveFormQuestions" || action === "saveQuestions") {
       var saveResult = saveFormQuestionsToSheet(postData.questions);
       return ContentService.createTextOutput(JSON.stringify(saveResult))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // د) تحديث صف مشترك في ورقة (المشتركين) - النقاط، الإجابات (|||)، تحليل الذكاء الاصطناعي
+    if (action === "updateSubscriberRow") {
+      var rowUpdateRes = updateSubscriberRowInSheet(postData);
+      return ContentService.createTextOutput(JSON.stringify(rowUpdateRes))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // هـ) حفظ ومزامنة قائمة المشتركين في ورقة (المشتركين)
+    if (action === "saveSubscribers") {
+      var subSaveRes = saveSubscribersListToSheet(postData.subscribers);
+      return ContentService.createTextOutput(JSON.stringify(subSaveRes))
         .setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -319,45 +343,94 @@ function submitRegistrationToSheet(data) {
     var timestamp = Utilities.formatDate(new Date(), "GMT+3", "yyyy/MM/dd - hh:mm a");
 
     // اعتماد رقم المشترك الحقيقي والاسم الكامل
-    var registrationId = String(data.registrationId || data.subscriberId || "").trim();
-    var displayName = (data.name || "").toString().trim();
+    var registrationId = String(data.registrationId || data.subscriberId || data.studentId || "").trim();
+    var displayName = String(data.name || data.studentName || data.nameArabic || "").trim();
     if (!registrationId && displayName) {
       registrationId = displayName;
     }
 
-    // تجميع الإجابات في كائن ميسر
+    // حماية صارمة: منع إضافة أي صف فارغ إذا كانت بيانات المشترك والإجابات فارغة
+    if (!registrationId && !displayName) {
+      return {
+        success: false,
+        error: "بيانات المشترك فارغة، تم تجاهل الطلب لمنع إنشاء صفوف فارغة."
+      };
+    }
+
+    // دالة مساعدة لضمان عدم تجاوز الحد الأقصى لخلية قوقل شيت (50,000 حرف)
+    function safeCellText(strVal) {
+      if (strVal === undefined || strVal === null) return "";
+      var s = String(strVal);
+      if (s.indexOf("data:") === 0 || s.indexOf("base64,") !== -1) {
+        return "[صورة مرفقة]";
+      }
+      if (s.length > 45000) {
+        return s.substring(0, 45000) + "...";
+      }
+      return s;
+    }
+
+    // تجميع الإجابات في كائن ميسر + رفع أي صورة Base64 إلى قوقل درايف وتحديث المصفوفة مباشرة
     var answersMap = {};
+    var targetFolderId = data.driveFolderId || "1tae6n3-tjB9vVtxr2GbK572SRtWxZ3f7";
+    var lastUploadedUrl = "";
+
     if (data.answers && Array.isArray(data.answers)) {
       for (var i = 0; i < data.answers.length; i++) {
         var item = data.answers[i];
         if (!item) continue;
         var qText = (item.question || "").toString().trim();
         var qAns = (item.answer !== undefined && item.answer !== null) ? item.answer.toString().trim() : "";
+
+        // إذا كانت الإجابة عبارة عن ملف أو صورة Base64، نرفعها فوراً إلى قوقل درايف ونستبدلها بالرابط القصير
+        if (qAns && (qAns.indexOf("data:") === 0 || qAns.indexOf("base64,") !== -1)) {
+          var finalFileUrl = "[صورة مرفقة]";
+          try {
+            var mimeMatch = qAns.match(/data:([^;]+);/);
+            var mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
+            var safeName = (displayName || "student").replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, "_");
+            var fileName = safeName + "_" + registrationId + "_" + Utilities.formatDate(new Date(), "GMT+3", "yyyyMMdd_HHmm") + ".jpg";
+            var upRes = uploadFileToDrive(qAns, fileName, mime, targetFolderId);
+            if (upRes && upRes.success && (upRes.fileUrl || upRes.viewUrl || upRes.downloadUrl)) {
+              finalFileUrl = upRes.fileUrl || upRes.viewUrl || upRes.downloadUrl;
+              lastUploadedUrl = finalFileUrl;
+            }
+          } catch (upErr) {
+            Logger.log("Drive upload error: " + upErr.message);
+          }
+          qAns = finalFileUrl;
+          data.answers[i].answer = finalFileUrl;
+        }
+
         if (qText) answersMap[qText] = qAns;
       }
     }
 
-    if (data.attachment && !answersMap["رفع ملف"]) {
-      answersMap["رفع ملف"] = data.attachment;
-    }
-
-    // رفع أي صور أو ملفات Base64 إلى قوقل درايف تلقائياً
-    var targetFolderId = data.driveFolderId || "1tae6n3-tjB9vVtxr2GbK572SRtWxZ3f7";
-    for (var key in answersMap) {
-      var val = answersMap[key];
-      if (typeof val === "string" && (val.indexOf("data:") === 0 || val.indexOf("base64,") !== -1)) {
-        try {
-          var mimeMatch = val.match(/data:([^;]+);/);
-          var mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
-          var safeName = displayName.replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, "_");
-          var fileName = safeName + "_" + registrationId + "_" + Utilities.formatDate(new Date(), "GMT+3", "yyyyMMdd_HHmm") + ".jpg";
-          var upRes = uploadFileToDrive(val, fileName, mime, targetFolderId);
-          if (upRes && upRes.success && (upRes.fileUrl || upRes.downloadUrl)) {
-            answersMap[key] = upRes.fileUrl || upRes.downloadUrl;
+    if (data.attachment) {
+      var attStr = String(data.attachment).trim();
+      if (attStr.indexOf("data:") === 0 || attStr.indexOf("base64,") !== -1) {
+        if (lastUploadedUrl) {
+          data.attachment = lastUploadedUrl;
+        } else {
+          try {
+            var attMimeMatch = attStr.match(/data:([^;]+);/);
+            var attMime = attMimeMatch ? attMimeMatch[1] : "image/jpeg";
+            var attSafeName = (displayName || "student").replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, "_");
+            var attFileName = attSafeName + "_" + registrationId + "_" + Utilities.formatDate(new Date(), "GMT+3", "yyyyMMdd_HHmm") + ".jpg";
+            var attUpRes = uploadFileToDrive(attStr, attFileName, attMime, targetFolderId);
+            if (attUpRes && attUpRes.success && (attUpRes.fileUrl || attUpRes.viewUrl || attUpRes.downloadUrl)) {
+              data.attachment = attUpRes.fileUrl || attUpRes.viewUrl || attUpRes.downloadUrl;
+              lastUploadedUrl = data.attachment;
+            } else {
+              data.attachment = "[صورة مرفقة]";
+            }
+          } catch (e) {
+            data.attachment = "[صورة مرفقة]";
           }
-        } catch (upErr) {
-          Logger.log("Drive upload error: " + upErr.message);
         }
+      }
+      if (!answersMap["رفع ملف"]) {
+        answersMap["رفع ملف"] = data.attachment;
       }
     }
 
@@ -479,6 +552,48 @@ function submitRegistrationToSheet(data) {
       if (totalScore > 0) hasScoredQuestions = true;
     }
 
+    // بناء نص تجميع كل الإجابات في خلية واحدة مفصولة بـ ( ||| ) للعمود الخامس في ورقة المشتركين
+    // نعتمد على الإجابات المنظفة بعد تحويل أي صورة مرفوعة إلى رابط قوقل درايف قصير
+    var combinedAnswersStr = "";
+    if (data.answers && Array.isArray(data.answers) && data.answers.length > 0) {
+      var ansParts = [];
+      for (var cai = 0; cai < data.answers.length; cai++) {
+        var cItem = data.answers[cai];
+        if (!cItem) continue;
+        var cAns = (cItem.answer !== undefined && cItem.answer !== null) ? String(cItem.answer).trim() : "";
+        if (cAns && (cAns.indexOf("data:") === 0 || cAns.indexOf("base64,") !== -1)) {
+          cAns = answersMap[cItem.question] || lastUploadedUrl || "[صورة مرفقة]";
+        }
+        ansParts.push(safeCellText(cAns) || "-");
+      }
+      combinedAnswersStr = ansParts.join(" ||| ");
+    } else if (data.combinedAnswers) {
+      combinedAnswersStr = String(data.combinedAnswers).replace(/data:[^|]+/g, lastUploadedUrl || "[صورة مرفقة]");
+    }
+
+    var aiAnalysisStr = safeCellText(data.aiAnalysis || "");
+
+    // =========================================================================
+    // أولاً: التسجيل المباشر في نفس صف المشترك داخل ورقة (المشتركين)
+    // العمود 1 (A): رقم تسلسل
+    // العمود 2 (B): Student ID
+    // العمود 3 (C): Student Name
+    // العمود 4 (D): عدد مجموع النقاط
+    // العمود 5 (E): تجميع كل الإجابات (|||)
+    // العمود 6 (F): تحليل الذكاء الاصطناعي
+    // =========================================================================
+    try {
+      updateSubscriberRowInSheet({
+        studentId: registrationId,
+        studentName: displayName,
+        totalScore: totalScore,
+        combinedAnswers: combinedAnswersStr,
+        aiAnalysis: aiAnalysisStr
+      });
+    } catch (subSheetErr) {
+      Logger.log("Subscribers sheet update notice: " + subSheetErr.toString());
+    }
+
     // بناء الترويسة القياسية الصارمة والمطلوبة:
     // العمود A: التاريخ والوقت
     // العمود B: رقم التسجيل (رقم المشترك الفعلي)
@@ -587,11 +702,27 @@ function submitRegistrationToSheet(data) {
       else {
         var qIdx = c - 3;
         var ans = findAnswerForColumn(hName, answersMap, data, qIdx);
-        // حفظ الإجابة كنص صريح دون أي تغيير أو تحويل للتواريخ
-        var ansStr = (ans !== undefined && ans !== null) ? ans.toString() : "";
+        // حفظ الإجابة كنص صريح وآمن دون تجاوز حد الخلية
+        var ansStr = safeCellText(ans);
         newRow.push(ansStr);
       }
     }
+
+    // تنظيف أي صفوف فارغة سابقة (بدون رقم تسجيل وبدون اسم) في ورقة RegistrationAnswers
+    try {
+      var currentLastRow = sheet.getLastRow();
+      if (currentLastRow > 1) {
+        var checkRange = sheet.getRange(2, 2, currentLastRow - 1, 2).getValues();
+        for (var delIdx = checkRange.length - 1; delIdx >= 0; delIdx--) {
+          var checkId = checkRange[delIdx][0] ? String(checkRange[delIdx][0]).trim() : "";
+          var checkName = checkRange[delIdx][1] ? String(checkRange[delIdx][1]).trim() : "";
+          if (!checkId && !checkName) {
+            sheet.deleteRow(delIdx + 2);
+          }
+        }
+      }
+      lastRow = sheet.getLastRow();
+    } catch (cleanErr) {}
 
     // فحص منع التكرار: البحث عن رقم المشترك في العمود B
     var regIdColIdx = 2; // العمود B دائماً
@@ -730,6 +861,8 @@ function getFormQuestionsFromSheet() {
         fieldType = "number";
       } else if (rawType.indexOf("ايميل") !== -1 || rawType.indexOf("بريد") !== -1 || rawType.indexOf("email") !== -1) {
         fieldType = "email";
+      } else if (rawType.indexOf("اختيارات 3") !== -1 || rawType.indexOf("اختيار 3") !== -1 || rawType.indexOf("اختيارات3") !== -1 || rawType.indexOf("متعدد") !== -1 || rawType.indexOf("checkbox") !== -1 || rawType.indexOf("multiple_choice") !== -1) {
+        fieldType = "multiple_choice";
       } else if (rawType.indexOf("اختيارات 2") !== -1 || rawType.indexOf("اختيار 2") !== -1 || rawType.indexOf("اختيارات2") !== -1 || rawType.indexOf("choice2") !== -1 || rawType.indexOf("scored_choice") !== -1 || rawType.indexOf("نقاط") !== -1) {
         fieldType = "scored_choice";
       } else if (rawType.indexOf("اختيار") !== -1 || rawType.indexOf("choice") !== -1 || rawType.indexOf("select") !== -1) {
@@ -883,6 +1016,264 @@ function saveFormQuestionsToSheet(questions) {
       success: false,
       error: err.toString(),
       message: "فشل حفظ الأسئلة: " + err.toString()
+    };
+  }
+}
+
+// =========================================================================
+// 8. دوال إدارة ورقة (المشتركين) — التحقق من الدخول وتسجيل النتائج في نفس الصف
+// هيكل ورقة (المشتركين):
+// العمود A (1): التسلسل
+// العمود B (2): Student ID
+// العمود C (3): Student Name
+// العمود D (4): مجموع النقاط
+// العمود E (5): الإجابات (|||)
+// العمود F (6): تحليل الذكاء الاصطناعي
+// =========================================================================
+
+function getOrCreateSubscribersSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName("المشتركين") || ss.getSheetByName("Subscribers");
+  if (!sheet) {
+    sheet = ss.insertSheet("المشتركين");
+    var headers = [
+      "التسلسل",
+      "Student ID",
+      "Student Name",
+      "مجموع النقاط",
+      "الإجابات (|||)",
+      "تحليل الذكاء الاصطناعي"
+    ];
+    sheet.getRange(1, 1, 1, 6).setValues([headers]);
+    sheet.getRange(1, 1, 1, 6)
+      .setFontWeight("bold")
+      .setBackground("#1E293B")
+      .setFontColor("#FFFFFF")
+      .setHorizontalAlignment("center");
+    sheet.setFrozenRows(1);
+  } else {
+    // التأكد من وجود عناوين الأعمدة الـ 6 في الصف الأول إذا كانت فارغة
+    var lastRow = sheet.getLastRow();
+    if (lastRow === 0) {
+      var initHeaders = [
+        "التسلسل",
+        "Student ID",
+        "Student Name",
+        "مجموع النقاط",
+        "الإجابات (|||)",
+        "تحليل الذكاء الاصطناعي"
+      ];
+      sheet.getRange(1, 1, 1, 6).setValues([initHeaders]);
+      sheet.setFrozenRows(1);
+    } else {
+      var row1 = sheet.getRange(1, 1, 1, 6).getValues()[0];
+      if (!row1[3]) sheet.getRange(1, 4).setValue("مجموع النقاط");
+      if (!row1[4]) sheet.getRange(1, 5).setValue("الإجابات (|||)");
+      if (!row1[5]) sheet.getRange(1, 6).setValue("تحليل الذكاء الاصطناعي");
+    }
+  }
+  return sheet;
+}
+
+function getSubscribersFromSheet() {
+  try {
+    var sheet = getOrCreateSubscribersSheet();
+    var lastRow = sheet.getLastRow();
+    if (lastRow <= 1) return [];
+    var data = sheet.getRange(1, 1, lastRow, Math.max(6, sheet.getLastColumn())).getValues();
+    var list = [];
+    for (var r = 1; r < data.length; r++) {
+      var row = data[r];
+      var seq = row[0] !== undefined && row[0] !== null ? String(row[0]).trim() : "";
+      var stuId = row[1] !== undefined && row[1] !== null ? String(row[1]).trim() : "";
+      var stuName = row[2] !== undefined && row[2] !== null ? String(row[2]).trim() : "";
+      var score = row[3] !== undefined && row[3] !== null ? row[3] : "";
+      var combinedAns = row[4] !== undefined && row[4] !== null ? String(row[4]).trim() : "";
+      var aiAnal = row[5] !== undefined && row[5] !== null ? String(row[5]).trim() : "";
+
+      if (!stuId && !stuName) continue;
+
+      list.push({
+        rowIndex: r + 1,
+        sequence: seq || r,
+        studentId: stuId,
+        studentName: stuName,
+        totalScore: score,
+        combinedAnswers: combinedAns,
+        aiAnalysis: aiAnal,
+        hasAnswered: Boolean(combinedAns && combinedAns !== "-")
+      });
+    }
+    return list;
+  } catch (e) {
+    return [];
+  }
+}
+
+function normalizeSubIdKey(val) {
+  if (val === undefined || val === null) return "";
+  return String(val)
+    .trim()
+    .replace(/[٠-٩]/g, function(d) { return String("٠١٢٣٤٥٦٧٨٩".indexOf(d)); })
+    .replace(/[۰-۹]/g, function(d) { return String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)); })
+    .replace(/^#/, "")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+}
+
+function updateSubscriberRowInSheet(postData) {
+  try {
+    var sheet = getOrCreateSubscribersSheet();
+    var stuId = String(postData.studentId || postData.registrationId || "").trim();
+    var stuName = String(postData.studentName || postData.name || "").trim();
+
+    // منع إضافة أي صف فارغ بدون رقم مشترك أو اسم
+    if (!stuId && !stuName) {
+      return {
+        success: false,
+        error: "Empty studentId and studentName"
+      };
+    }
+
+    var scoreVal = postData.clearAnswer ? "" : (postData.totalScore !== undefined ? postData.totalScore : "");
+    var rawCombined = postData.clearAnswer ? "" : String(postData.combinedAnswers || "");
+    if (rawCombined.indexOf("data:") === 0 || rawCombined.indexOf("base64,") !== -1) {
+      rawCombined = rawCombined.replace(/data:[^|]+/g, "[صورة مرفقة]");
+    }
+    if (rawCombined.length > 45000) {
+      rawCombined = rawCombined.substring(0, 45000) + "...";
+    }
+    var combinedAns = rawCombined;
+
+    var rawAi = postData.clearAnswer ? "" : String(postData.aiAnalysis || "");
+    if (rawAi.length > 45000) {
+      rawAi = rawAi.substring(0, 45000) + "...";
+    }
+    var aiAnal = rawAi;
+
+    // تنظيف أي صفوف فارغة سابقة في ورقة المشتركين (التي لا تحتوي على Student ID ولا Student Name)
+    var lastRow = sheet.getLastRow();
+    if (lastRow > 1) {
+      try {
+        var checkSubRows = sheet.getRange(2, 2, lastRow - 1, 2).getValues();
+        for (var dIdx = checkSubRows.length - 1; dIdx >= 0; dIdx--) {
+          var cId = checkSubRows[dIdx][0] !== undefined && checkSubRows[dIdx][0] !== null ? String(checkSubRows[dIdx][0]).trim() : "";
+          var cName = checkSubRows[dIdx][1] !== undefined && checkSubRows[dIdx][1] !== null ? String(checkSubRows[dIdx][1]).trim() : "";
+          if (!cId && !cName) {
+            sheet.deleteRow(dIdx + 2);
+          }
+        }
+        lastRow = sheet.getLastRow();
+      } catch (e) {}
+    }
+
+    var targetRow = -1;
+    var normTargetId = normalizeSubIdKey(stuId);
+
+    if (lastRow >= 1) {
+      var values = sheet.getRange(1, 1, lastRow, 6).getValues();
+      for (var r = 0; r < values.length; r++) {
+        var rowId = values[r][1] !== undefined && values[r][1] !== null ? String(values[r][1]).trim() : "";
+        var rowName = values[r][2] !== undefined && values[r][2] !== null ? String(values[r][2]).trim() : "";
+        if (normTargetId && rowId && normalizeSubIdKey(rowId) === normTargetId) {
+          targetRow = r + 1;
+          break;
+        }
+        if (!normTargetId && stuName && rowName && normalizeQuestionKey(rowName) === normalizeQuestionKey(stuName)) {
+          targetRow = r + 1;
+          break;
+        }
+      }
+    }
+
+    if (targetRow !== -1) {
+      // إذا كان عمود التسلسل (A) فارغاً في صف المشترك، نضع رقم التسلسل تلقائياً
+      try {
+        var currentSeq = sheet.getRange(targetRow, 1).getValue();
+        if (currentSeq === "" || currentSeq === null || currentSeq === undefined) {
+          sheet.getRange(targetRow, 1).setValue(targetRow > 1 ? targetRow - 1 : 1);
+        }
+      } catch (e) {}
+
+      // كتابة النتائج في نفس صف المشترك تماماً وبشكل مستقل لكل خلية:
+      // العمود الرابع (4): عدد مجموع النقاط
+      // العمود الخامس (5): تجميع كل الإجابات بفاصل (|||)
+      // العمود السادس (6): تحليل الذكاء الاصطناعي
+      try { sheet.getRange(targetRow, 4).setValue(scoreVal); } catch (e4) {}
+      try { sheet.getRange(targetRow, 5).setNumberFormat("@").setValue(combinedAns); } catch (e5) {}
+      try { sheet.getRange(targetRow, 6).setValue(aiAnal); } catch (e6) {}
+
+      return {
+        success: true,
+        rowIndex: targetRow,
+        studentId: stuId,
+        message: "تم تسجيل النتائج في نفس صف المشترك رقم (" + stuId + ") في ورقة المشتركين بنجاح!"
+      };
+    } else {
+      // إذا لم يكن المشترك مضافاً بعد، نضيف له صفاً جديداً في ورقة المشتركين
+      var newSeq = lastRow > 0 ? lastRow : 1;
+      sheet.appendRow([newSeq, stuId, stuName, scoreVal, combinedAns, aiAnal]);
+      var appendedRow = sheet.getLastRow();
+      try { sheet.getRange(appendedRow, 5).setNumberFormat("@"); } catch (e) {}
+      return {
+        success: true,
+        rowIndex: appendedRow,
+        studentId: stuId,
+        message: "تمت إضافة صف المشترك وتسجيل نتائجه في ورقة المشتركين بنجاح!"
+      };
+    }
+  } catch (err) {
+    return {
+      success: false,
+      error: err.toString()
+    };
+  }
+}
+
+function saveSubscribersListToSheet(subscribers) {
+  try {
+    if (!subscribers || !Array.isArray(subscribers)) {
+      return { success: false, error: "Invalid subscribers array" };
+    }
+    var sheet = getOrCreateSubscribersSheet();
+    var headers = [
+      "التسلسل",
+      "Student ID",
+      "Student Name",
+      "مجموع النقاط",
+      "الإجابات (|||)",
+      "تحليل الذكاء الاصطناعي"
+    ];
+    sheet.clearContents();
+    var rows = [headers];
+    for (var i = 0; i < subscribers.length; i++) {
+      var s = subscribers[i];
+      if (!s) continue;
+      rows.push([
+        s.sequence || (i + 1),
+        s.studentId || "",
+        s.studentName || "",
+        s.totalScore !== undefined ? s.totalScore : "",
+        s.combinedAnswers || "",
+        s.aiAnalysis || ""
+      ]);
+    }
+    sheet.getRange(1, 1, rows.length, 6).setValues(rows);
+    sheet.getRange(1, 1, 1, 6)
+      .setFontWeight("bold")
+      .setBackground("#1E293B")
+      .setFontColor("#FFFFFF")
+      .setHorizontalAlignment("center");
+    sheet.setFrozenRows(1);
+    return {
+      success: true,
+      count: subscribers.length,
+      message: "تم تحديث ورقة المشتركين بنجاح!"
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err.toString()
     };
   }
 }

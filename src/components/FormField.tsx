@@ -190,7 +190,7 @@ export const FormField: React.FC<FormFieldProps> = ({
     stopCamera();
   };
 
-  // --- File Upload handler ---
+  // --- File Upload handler (with automatic image compression for fast Drive upload) ---
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -198,10 +198,54 @@ export const FormField: React.FC<FormFieldProps> = ({
     setFileName(file.name);
     const reader = new FileReader();
     reader.onload = () => {
-      const base64 = reader.result as string;
-      onChange(base64);
-      if (onFileSelect) {
-        onFileSelect(base64, file.name);
+      const rawBase64 = reader.result as string;
+      if (file.type.startsWith("image/") && !file.type.includes("svg") && !file.type.includes("gif")) {
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const maxDim = 1100;
+            let w = img.width || 800;
+            let h = img.height || 600;
+            if (w > maxDim || h > maxDim) {
+              if (w > h) {
+                h = Math.round((h * maxDim) / w);
+                w = maxDim;
+              } else {
+                w = Math.round((w * maxDim) / h);
+                h = maxDim;
+              }
+            }
+            const offCanvas = document.createElement("canvas");
+            offCanvas.width = w;
+            offCanvas.height = h;
+            const ctx = offCanvas.getContext("2d");
+            if (ctx) {
+              ctx.drawImage(img, 0, 0, w, h);
+              const compressed = offCanvas.toDataURL("image/jpeg", 0.8);
+              onChange(compressed);
+              if (onFileSelect) {
+                onFileSelect(compressed, file.name);
+              }
+              return;
+            }
+          } catch (compErr) {}
+          onChange(rawBase64);
+          if (onFileSelect) {
+            onFileSelect(rawBase64, file.name);
+          }
+        };
+        img.onerror = () => {
+          onChange(rawBase64);
+          if (onFileSelect) {
+            onFileSelect(rawBase64, file.name);
+          }
+        };
+        img.src = rawBase64;
+      } else {
+        onChange(rawBase64);
+        if (onFileSelect) {
+          onFileSelect(rawBase64, file.name);
+        }
       }
     };
     reader.readAsDataURL(file);

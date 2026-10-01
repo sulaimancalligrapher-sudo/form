@@ -26,8 +26,10 @@ import {
   SubmissionResponse,
   RegistrationQuestion,
   SheetAnswerRecord,
-  SheetAnswersData
+  SheetAnswersData,
+  SubscriberRecord
 } from "../types";
+import { getAnalysisSettings } from "./aiAnalyzer";
 
 /**
  * Formats Google Drive / thumbnail URLs for robust embedding
@@ -149,12 +151,27 @@ export function setActiveScriptUrl(url: string): void {
 export function getActiveSpreadsheetId(): string {
   if (typeof window !== "undefined") {
     try {
+      // Clear legacy v1 caches that may contain raw base64 or old sheet rows
+      localStorage.removeItem("thnoon_subscribers_overrides_v1");
+      localStorage.removeItem("thnoon_subscribers_sheet_cache_v1");
+
       const saved = localStorage.getItem("sheet_form_spreadsheet_id");
-      if (saved && saved.trim()) return saved.trim();
+      if (saved && saved.trim()) {
+        // Automatically upgrade outdated default spreadsheet ID
+        if (saved.trim() === "1MAurScyKTntcUUWAoB7Qt62vwvmEnDqmYNaB0DKo9tY") {
+          localStorage.setItem("sheet_form_spreadsheet_id", DEFAULT_SPREADSHEET_ID);
+          localStorage.removeItem("thnoon_cached_registration_questions");
+          localStorage.removeItem("thnoon_questions_admin_modified");
+          return DEFAULT_SPREADSHEET_ID;
+        }
+        return saved.trim();
+      }
     } catch (e) {}
   }
   const envId = import.meta.env?.VITE_SPREADSHEET_ID;
-  if (envId && envId.trim()) return envId.trim();
+  if (envId && envId.trim() && envId.trim() !== "1MAurScyKTntcUUWAoB7Qt62vwvmEnDqmYNaB0DKo9tY") {
+    return envId.trim();
+  }
   return DEFAULT_SPREADSHEET_ID;
 }
 
@@ -760,6 +777,15 @@ export async function sendTelegramNotification(
       message += `\n`;
     }
 
+    if (payload.totalScore !== undefined && payload.totalScore !== null && String(payload.totalScore) !== "") {
+      message += `🏆 <b>مجموع النقاط:</b> <code>${payload.totalScore}</code>\n\n`;
+    }
+
+    if (payload.aiAnalysis) {
+      const cleanAnalysis = String(payload.aiAnalysis).replace(/[<>&]/g, "");
+      message += `🧠 <b>تحليل الذكاء الاصطناعي:</b>\n<pre>${cleanAnalysis.substring(0, 1200)}</pre>\n\n`;
+    }
+
     if (tgConfig.customFooter) {
       message += `<i>${tgConfig.customFooter}</i>\n`;
     }
@@ -783,8 +809,65 @@ export async function sendTelegramNotification(
 }
 
 /**
+ * Helper: Pre-uploads a Base64 file/image to Google Drive via Google Apps Script (action: "uploadFile")
+ * Returns the short Google Drive URL so we never send >50,000 char base64 strings into Google Sheets cells.
+ */
+export async function uploadAttachmentToDriveBridge(
+  base64Data: string,
+  fileName: string,
+  mimeType: string,
+  folderId: string,
+  scriptUrl: string
+): Promise<string> {
+  if (!base64Data || (!base64Data.startsWith("data:") && !base64Data.includes("base64,"))) {
+    return base64Data;
+  }
+
+  const uploadPayload = {
+    action: "uploadFile",
+    base64Data,
+    fileName,
+    mimeType,
+    folderId,
+    scriptUrl
+  };
+
+  // 1. Try via /api/register server proxy
+  try {
+    const res = await fetch("/api/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(uploadPayload)
+    });
+    if (res.ok) {
+      const data = await res.json().catch(() => null);
+      if (data && data.success && (data.fileUrl || data.viewUrl || data.downloadUrl)) {
+        return data.fileUrl || data.viewUrl || data.downloadUrl;
+      }
+    }
+  } catch (e) {}
+
+  // 2. Try direct POST to Google Apps Script
+  try {
+    const res = await fetch(scriptUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(uploadPayload)
+    });
+    if (res.ok) {
+      const data = await res.json().catch(() => null);
+      if (data && data.success && (data.fileUrl || data.viewUrl || data.downloadUrl)) {
+        return data.fileUrl || data.viewUrl || data.downloadUrl;
+      }
+    }
+  } catch (e) {}
+
+  return "[تم إرفاق صورة]";
+}
+
+/**
  * Universal Registration Submitter
- * Submits the form data reliably to Google Sheets, uploads any attachments,
+ * Submits the form data reliably to Google Sheets, uploads any attachments first,
  * and triggers Telegram alerts.
  */
 export async function submitRegistrationBridge(
@@ -800,18 +883,96 @@ export async function submitRegistrationBridge(
   // Use the actual Subscriber ID provided by the subscriber/URL/session
   const now = new Date();
   const regId = String(payload.registrationId || (payload as any).subscriberId || "").trim();
+  const studentName = String(payload.name || "").trim();
 
   const pad = (n: number) => n.toString().padStart(2, "0");
   const formattedTimestamp = `${now.getFullYear()}/${pad(now.getMonth() + 1)}/${pad(now.getDate())} - ${pad(now.getHours())}:${pad(now.getMinutes())}`;
 
+  // STEP 0: Pre-upload any Base64 image/file in answers or attachment to Google Drive first!
+  // This replaces 500KB+ base64 strings with a short 65-char Google Drive link,
+  // preventing the Google Sheets 50,000-character cell limit crash in both RegistrationAnswers and المشتركين.
+  const cleanedAnswers = Array.isArray(payload.answers) ? [...payload.answers] : [];
+  let cleanedAttachment = payload.attachment || "";
+
+  for (let i = 0; i < cleanedAnswers.length; i++) {
+    const item = cleanedAnswers[i];
+    if (!item || !item.answer) continue;
+    const ansStr = String(item.answer).trim();
+    if (ansStr.startsWith("data:") || ansStr.includes("base64,")) {
+      const mimeMatch = ansStr.match(/data:([^;]+);/);
+      const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
+      const safeName = (studentName || "student").replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, "_");
+      const fileName = `${safeName}_${regId}_${Date.now()}.jpg`;
+      const uploadedUrl = await uploadAttachmentToDriveBridge(
+        ansStr,
+        fileName,
+        mime,
+        activeDriveFolderId,
+        activeScriptUrl
+      );
+      cleanedAnswers[i] = {
+        ...item,
+        answer: uploadedUrl
+      };
+      if (cleanedAttachment === ansStr) {
+        cleanedAttachment = uploadedUrl;
+      }
+    }
+  }
+
+  if (cleanedAttachment && (cleanedAttachment.startsWith("data:") || cleanedAttachment.includes("base64,"))) {
+    const mimeMatch = cleanedAttachment.match(/data:([^;]+);/);
+    const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
+    const safeName = (studentName || "student").replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, "_");
+    const fileName = `${safeName}_${regId}_${Date.now()}.jpg`;
+    cleanedAttachment = await uploadAttachmentToDriveBridge(
+      cleanedAttachment,
+      fileName,
+      mime,
+      activeDriveFolderId,
+      activeScriptUrl
+    );
+  }
+
+  // Format combinedAnswers separated by " ||| " for Column E of المشتركين sheet using the cleaned answers (with Drive URLs, never base64)
+  const combinedAnswersStr =
+    cleanedAnswers.length > 0
+      ? cleanedAnswers
+          .map((a) => {
+            const v = a && a.answer ? String(a.answer).trim() : "-";
+            if (v.startsWith("data:") || v.includes("base64,")) return "[صورة مرفقة]";
+            return v || "-";
+          })
+          .join(" ||| ")
+      : (payload.combinedAnswers || "").replace(/data:[^|]+/g, "[صورة مرفقة]");
+
   const fullPayload: FormSubmissionPayload = {
     ...payload,
     registrationId: regId,
+    name: studentName,
     timestamp: formattedTimestamp,
+    answers: cleanedAnswers,
+    attachment: cleanedAttachment,
+    combinedAnswers: combinedAnswersStr,
+    aiAnalysis: payload.aiAnalysis || "",
     scriptUrl: activeScriptUrl,
     spreadsheetId: activeSpreadsheetId,
     driveFolderId: activeDriveFolderId,
     telegramConfig: activeTelegramConfig
+  };
+
+  // Helper to mark subscriber as answered in local cache once submitted
+  const markLocalSuccess = () => {
+    if (regId) {
+      saveLocalSubscriberOverride(regId, {
+        studentId: regId,
+        studentName: studentName,
+        totalScore: payload.totalScore ?? 0,
+        combinedAnswers: combinedAnswersStr,
+        aiAnalysis: payload.aiAnalysis || "",
+        hasAnswered: true
+      });
+    }
   };
 
   // 1. Try Local API route or Vercel Serverless Function (/api/register)
@@ -825,12 +986,21 @@ export async function submitRegistrationBridge(
     if (res.ok) {
       const data = await res.json().catch(() => null);
       if (data && (data.success || data.registrationId)) {
+        markLocalSuccess();
+        sendTelegramNotification(fullPayload, activeTelegramConfig).catch(() => {});
         return {
           success: true,
           registrationId: data.registrationId || regId,
           timestamp: formattedTimestamp,
           message: data.message || `تم استلام وحفظ طلب التسجيل بنجاح بالرقم المرجعي (${regId}) في قوقل شيت!`,
           data
+        };
+      }
+      // If Google Apps Script returned an explicit error, do NOT fall through to hidden iframe (prevents empty ghost rows)
+      if (data && data.success === false && data.error) {
+        return {
+          success: false,
+          error: data.error || data.message || "حدث خطأ أثناء الحفظ في قوقل شيت"
         };
       }
     }
@@ -841,7 +1011,6 @@ export async function submitRegistrationBridge(
   // 2. Direct Delivery Strategy (guaranteed single submission to prevent duplication)
   let directSuccess = false;
   let directData: any = null;
-  let sentViaNoCors = false;
 
   try {
     const response = await fetch(activeScriptUrl, {
@@ -860,6 +1029,11 @@ export async function submitRegistrationBridge(
         if (json.success !== false) {
           directSuccess = true;
           directData = json;
+        } else if (json.error) {
+          return {
+            success: false,
+            error: json.error
+          };
         }
       } catch (parseErr) {
         directSuccess = true;
@@ -878,11 +1052,12 @@ export async function submitRegistrationBridge(
           ...fullPayload
         })
       });
-      sentViaNoCors = true;
+      directSuccess = true;
     } catch (noCorsErr) {}
   }
 
   if (directSuccess) {
+    markLocalSuccess();
     sendTelegramNotification(fullPayload, activeTelegramConfig).catch(() => {});
     return {
       success: true,
@@ -893,16 +1068,9 @@ export async function submitRegistrationBridge(
     };
   }
 
-  // 3. Fallback to hidden dynamic iframe ONLY if no-cors fetch failed or was not sent
-  // (Prevents duplicate row creation in Google Sheets)
-  if (!sentViaNoCors) {
-    try {
-      await submitViaHiddenIframe("submitRegistration", fullPayload, activeScriptUrl);
-    } catch (e) {}
-  }
-
-  // 4. Verify in Google Sheet (GVIZ read)
+  // 3. Verify in Google Sheet (GVIZ read)
   const verifiedInSheet = await verifyRegistrationInSheet(regId, fullPayload.name, activeSpreadsheetId, 4500);
+  markLocalSuccess();
   sendTelegramNotification(fullPayload, activeTelegramConfig).catch(() => {});
 
   return {
@@ -998,7 +1166,8 @@ export async function fetchRegistrationAnswersBridge(
             const regId = valAt(1);
             const name = valAt(2);
 
-            if (!regId && !name && !timestamp) continue;
+            // Ignore empty/ghost rows where both registrationId and name are missing
+            if (!regId && !name) continue;
 
             const answers: Record<string, string> = {};
             const rawRow: Record<string, any> = {};
@@ -1052,30 +1221,32 @@ export async function fetchRegistrationAnswersBridge(
         const headers = data.headers || (rawRecs.length > 0 ? Object.keys(rawRecs[0].rowData || rawRecs[0]) : []);
         const totalScoreHeader = headers.find((h: string) => isTotalScoreHeader(h));
 
-        const records: SheetAnswerRecord[] = rawRecs.map((rec: any, idx: number) => {
-          const rowData = rec.rowData || rec;
-          const timestamp = String(rowData["التاريخ والوقت"] || rowData["تاريخ التسجيل"] || rowData[headers[0]] || "");
-          const regId = String(rowData["رقم التسجيل"] || rowData["رقم المشترك"] || rowData[headers[1]] || "");
-          const name = String(rowData["الاسم الكامل للمشترك"] || rowData["اسم المشترك"] || rowData["الاسم"] || rowData[headers[2]] || "");
-          const totalScore = totalScoreHeader ? rowData[totalScoreHeader] : (rowData["مجموع النقاط"] || "");
+        const records: SheetAnswerRecord[] = rawRecs
+          .map((rec: any, idx: number) => {
+            const rowData = rec.rowData || rec;
+            const timestamp = String(rowData["التاريخ والوقت"] || rowData["تاريخ التسجيل"] || rowData[headers[0]] || "");
+            const regId = String(rowData["رقم التسجيل"] || rowData["رقم المشترك"] || rowData[headers[1]] || "").trim();
+            const name = String(rowData["الاسم الكامل للمشترك"] || rowData["اسم المشترك"] || rowData["الاسم"] || rowData[headers[2]] || "").trim();
+            const totalScore = totalScoreHeader ? rowData[totalScoreHeader] : (rowData["مجموع النقاط"] || "");
 
-          const answers: Record<string, string> = {};
-          headers.forEach((h: string, cIdx: number) => {
-            if (cIdx >= 3 && h !== totalScoreHeader) {
-              answers[h] = String(rowData[h] || "");
-            }
-          });
+            const answers: Record<string, string> = {};
+            headers.forEach((h: string, cIdx: number) => {
+              if (cIdx >= 3 && h !== totalScoreHeader) {
+                answers[h] = String(rowData[h] || "");
+              }
+            });
 
-          return {
-            rowIndex: rec.rowIndex || idx + 1,
-            timestamp,
-            registrationId: regId,
-            name,
-            totalScore,
-            answers,
-            rawRow: rowData
-          };
-        });
+            return {
+              rowIndex: rec.rowIndex || idx + 1,
+              timestamp,
+              registrationId: regId,
+              name,
+              totalScore,
+              answers,
+              rawRow: rowData
+            };
+          })
+          .filter((r: SheetAnswerRecord) => Boolean(r.registrationId || r.name));
 
         return {
           headers,
@@ -1175,5 +1346,510 @@ export async function saveFormQuestionsBridge(
   return {
     success: true,
     message: "تم حفظ وتحديث الأسئلة في التطبيق والذاكرة المحلية بنجاح!"
+  };
+}
+
+// ============================================================================
+// SUBSCRIBERS SHEET (ورقة المشتركين) - LOGIN VERIFICATION & SAME-ROW RESULTS
+// Structure of sheet "المشتركين":
+// Col A (0): رقم التسلسل (Sequence)
+// Col B (1): Student ID (رقم المشترك)
+// Col C (2): Student Name (اسم المشترك)
+// Col D (3): عدد مجموع النقاط (Total Score)
+// Col E (4): تجميع كل الإجابات (|||) (Combined Answers)
+// Col F (5): تحليل الذكاء الاصطناعي (AI Analysis)
+// ============================================================================
+
+const SUBSCRIBERS_OVERRIDES_KEY = "thnoon_subscribers_overrides_v2";
+const SUBSCRIBERS_CACHE_KEY = "thnoon_subscribers_sheet_cache_v2";
+
+/**
+ * Normalizes Student ID (converts Arabic/Persian digits to English, trims spaces)
+ */
+export function normalizeStudentId(id: string | number | undefined | null): string {
+  if (id === undefined || id === null) return "";
+  return String(id)
+    .trim()
+    .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
+    .replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)))
+    .replace(/^#/, "")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+}
+
+/**
+ * Normalizes Student Name (unifies Arabic alef/teh/ya variations and spaces)
+ */
+export function normalizeStudentName(name: string | undefined | null): string {
+  if (!name) return "";
+  return String(name)
+    .trim()
+    .toLowerCase()
+    .replace(/[\u064B-\u065F\u0670]/g, "") // remove tashkeel
+    .replace(/[أإآٱ]/g, "ا")
+    .replace(/ة/g, "ه")
+    .replace(/[ىئ]/g, "ي")
+    .replace(/ؤ/g, "و")
+    .replace(/\s+/g, " ");
+}
+
+export function getLocalSubscriberOverrides(): Record<string, Partial<SubscriberRecord> & { deleted?: boolean }> {
+  if (typeof window !== "undefined") {
+    try {
+      const raw = localStorage.getItem(SUBSCRIBERS_OVERRIDES_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+  }
+  return {};
+}
+
+export function saveLocalSubscriberOverride(
+  studentId: string,
+  data: Partial<SubscriberRecord> & { deleted?: boolean }
+): void {
+  if (typeof window !== "undefined") {
+    try {
+      const key = normalizeStudentId(studentId);
+      if (!key) return;
+      const current = getLocalSubscriberOverrides();
+      current[key] = { ...(current[key] || {}), ...data };
+      localStorage.setItem(SUBSCRIBERS_OVERRIDES_KEY, JSON.stringify(current));
+    } catch (e) {}
+  }
+}
+
+/**
+ * Fetches all rows from the "المشتركين" sheet via GVIZ or Apps Script,
+ * merged with local overrides for instant consistency before CDN propagation.
+ */
+export async function fetchSubscribersSheetBridge(
+  explicitScriptUrl?: string,
+  explicitSpreadsheetId?: string,
+  forceRefresh: boolean = false
+): Promise<SubscriberRecord[]> {
+  const targetSpreadsheetId = explicitSpreadsheetId || getActiveSpreadsheetId();
+  const targetScriptUrl = explicitScriptUrl || getActiveScriptUrl();
+
+  let sheetRecords: SubscriberRecord[] = [];
+  let fetchedSuccessfully = false;
+
+  // Helper to parse GVIZ response for المشتركين sheet
+  const parseSubscribersGviz = (text: string): SubscriberRecord[] | null => {
+    const jsonStart = text.indexOf("{");
+    const jsonEnd = text.lastIndexOf("}");
+    if (jsonStart === -1 || jsonEnd === -1) return null;
+    const json = JSON.parse(text.substring(jsonStart, jsonEnd + 1));
+    if (!json || !json.table || !Array.isArray(json.table.rows)) return null;
+
+    const rows = json.table.rows;
+    const list: SubscriberRecord[] = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const cells = rows[i]?.c || [];
+      const val = (idx: number): string => {
+        const c = cells[idx];
+        if (!c || c.v === null || c.v === undefined) return "";
+        const raw = String(c.f !== undefined && c.f !== null ? c.f : c.v).trim();
+        return raw === "null" || raw === "undefined" ? "" : raw;
+      };
+
+      const seq = val(0);
+      const stuId = val(1);
+      const stuName = val(2);
+      const score = val(3);
+      const combinedAns = val(4);
+      const aiAnal = val(5);
+
+      // Skip header row if it matches column titles
+      const idLow = stuId.toLowerCase();
+      const nameLow = stuName.toLowerCase();
+      if (
+        idLow === "student id" ||
+        idLow === "student_id" ||
+        idLow === "رقم المشترك" ||
+        idLow === "الرقم" ||
+        nameLow === "student name" ||
+        nameLow === "اسم المشترك" ||
+        seq === "التسلسل" ||
+        seq === "رقم تسلسل"
+      ) {
+        continue;
+      }
+
+      if (!stuId && !stuName) continue;
+
+      const hasAnswered = Boolean(
+        (combinedAns && combinedAns !== "-" && combinedAns.length > 0) ||
+          (aiAnal && aiAnal !== "-" && aiAnal.length > 5)
+      );
+
+      list.push({
+        rowIndex: i + 1,
+        sequence: seq || list.length + 1,
+        studentId: stuId,
+        studentName: stuName,
+        totalScore: score,
+        combinedAnswers: combinedAns,
+        aiAnalysis: aiAnal,
+        hasAnswered
+      });
+    }
+
+    return list;
+  };
+
+  // 1. Try reading sheet "المشتركين" via GVIZ
+  const candidateSheetNames = ["المشتركين", "Subscribers"];
+  for (const sheetName of candidateSheetNames) {
+    try {
+      const gvizUrl = `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(
+        sheetName
+      )}&_cb=${Date.now()}`;
+      const res = await fetch(gvizUrl, { cache: "no-store" });
+      if (res.ok) {
+        const text = await res.text();
+        // Verify that Google didn't silently return RegistrationQuestions or RegistrationAnswers
+        // by checking if row 0 or cols look like RegistrationQuestions
+        const parsed = parseSubscribersGviz(text);
+        if (parsed && parsed.length > 0) {
+          // Ensure it's not accidentally the RegistrationQuestions sheet (where Col C is question type like "اختيارات")
+          const firstRowTypeCheck = String(parsed[0].studentName || "").toLowerCase();
+          const looksLikeQuestionsSheet =
+            firstRowTypeCheck === "اختيارات" ||
+            firstRowTypeCheck === "نص" ||
+            firstRowTypeCheck === "choice" ||
+            firstRowTypeCheck === "text" ||
+            String(parsed[0].sequence || "").includes("هل تحب الخط");
+          if (!looksLikeQuestionsSheet) {
+            sheetRecords = parsed;
+            fetchedSuccessfully = true;
+            break;
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 2. Fallback: Try Apps Script GET (?action=getSubscribers)
+  if (!fetchedSuccessfully) {
+    try {
+      const gasUrl = `${targetScriptUrl}${targetScriptUrl.includes("?") ? "&" : "?"}action=getSubscribers&_cb=${Date.now()}`;
+      const res = await fetch(gasUrl, { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.subscribers)) {
+          sheetRecords = data.subscribers.map((s: any, idx: number) => ({
+            rowIndex: s.rowIndex || idx + 2,
+            sequence: s.sequence ?? idx + 1,
+            studentId: String(s.studentId || s.id || "").trim(),
+            studentName: String(s.studentName || s.name || "").trim(),
+            totalScore: s.totalScore ?? "",
+            combinedAnswers: s.combinedAnswers || "",
+            aiAnalysis: s.aiAnalysis || "",
+            hasAnswered: Boolean(
+              (s.combinedAnswers && String(s.combinedAnswers).trim() !== "") ||
+                (s.aiAnalysis && String(s.aiAnalysis).trim() !== "")
+            )
+          }));
+          fetchedSuccessfully = true;
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 3. Fallback to cached sheet records if network failed
+  if (!fetchedSuccessfully && !forceRefresh && typeof window !== "undefined") {
+    try {
+      const cached = localStorage.getItem(SUBSCRIBERS_CACHE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) {
+          sheetRecords = parsed;
+        }
+      }
+    } catch (e) {}
+  }
+
+  // Merge with local overrides (for newly submitted answers, reset answers, or newly added subscribers)
+  const overrides = getLocalSubscriberOverrides();
+  const mergedMap = new Map<string, SubscriberRecord>();
+
+  sheetRecords.forEach((rec) => {
+    const key = normalizeStudentId(rec.studentId);
+    if (!key) return;
+    const ov = overrides[key];
+    if (ov?.deleted) return;
+    if (ov) {
+      const combinedAnswers = ov.combinedAnswers !== undefined ? ov.combinedAnswers : rec.combinedAnswers;
+      const totalScore = ov.totalScore !== undefined ? ov.totalScore : rec.totalScore;
+      const aiAnalysis = ov.aiAnalysis !== undefined ? ov.aiAnalysis : rec.aiAnalysis;
+      const hasAnswered =
+        ov.hasAnswered !== undefined
+          ? ov.hasAnswered
+          : Boolean(combinedAnswers && String(combinedAnswers).trim() !== "");
+      mergedMap.set(key, {
+        ...rec,
+        studentName: ov.studentName || rec.studentName,
+        totalScore,
+        combinedAnswers,
+        aiAnalysis,
+        hasAnswered
+      });
+    } else {
+      mergedMap.set(key, rec);
+    }
+  });
+
+  // Also include any subscribers added locally by the admin that aren't in GVIZ yet
+  Object.entries(overrides).forEach(([key, ov]) => {
+    if (ov.deleted || mergedMap.has(key)) return;
+    if (ov.studentId && ov.studentName) {
+      mergedMap.set(key, {
+        rowIndex: mergedMap.size + 2,
+        sequence: ov.sequence || mergedMap.size + 1,
+        studentId: ov.studentId,
+        studentName: ov.studentName,
+        totalScore: ov.totalScore ?? "",
+        combinedAnswers: ov.combinedAnswers ?? "",
+        aiAnalysis: ov.aiAnalysis ?? "",
+        hasAnswered: Boolean(ov.hasAnswered)
+      });
+    }
+  });
+
+  const finalRecords = Array.from(mergedMap.values());
+  if (typeof window !== "undefined" && finalRecords.length > 0) {
+    try {
+      localStorage.setItem(SUBSCRIBERS_CACHE_KEY, JSON.stringify(finalRecords));
+    } catch (e) {}
+  }
+
+  return finalRecords;
+}
+
+/**
+ * Verifies Subscriber ID and Name against the "المشتركين" sheet.
+ * Enforces:
+ * 1. Both Student ID and Student Name must match a registered row in "المشتركين".
+ * 2. If the student already answered (and preventDuplicateSubmission is enabled), blocks re-answering.
+ */
+export async function verifySubscriberInSheetBridge(
+  studentId: string,
+  studentName: string,
+  explicitScriptUrl?: string,
+  explicitSpreadsheetId?: string
+): Promise<{
+  valid: boolean;
+  status: "ok" | "already_answered" | "invalid_name" | "not_found" | "form_closed";
+  message: string;
+  subscriber?: SubscriberRecord;
+}> {
+  const analysisSettings = getAnalysisSettings();
+
+  if (analysisSettings.isFormClosed) {
+    return {
+      valid: false,
+      status: "form_closed",
+      message: "الاستبيان مغلق حالياً من قِبل الإدارة ولا يستقبل إجابات جديدة."
+    };
+  }
+
+  const cleanId = normalizeStudentId(studentId);
+  const cleanName = normalizeStudentName(studentName);
+
+  if (!cleanId || !cleanName) {
+    return {
+      valid: false,
+      status: "not_found",
+      message: "يرجى إدخال رقم المشترك (Student ID) واسم المشترك (Student Name) بشكل كامل."
+    };
+  }
+
+  const subscribers = await fetchSubscribersSheetBridge(explicitScriptUrl, explicitSpreadsheetId);
+
+  // Find subscriber by Student ID (Column B)
+  const matchedById = subscribers.find((s) => normalizeStudentId(s.studentId) === cleanId);
+
+  if (matchedById) {
+    const registeredNameNorm = normalizeStudentName(matchedById.studentName);
+    // Check if the entered name matches the registered name (exact normalized match or contains full first+second name)
+    const isNameMatch =
+      registeredNameNorm === cleanName ||
+      (cleanName.length >= 3 &&
+        registeredNameNorm.length >= 3 &&
+        (registeredNameNorm === cleanName ||
+          registeredNameNorm.split(" ").slice(0, 2).join(" ") === cleanName.split(" ").slice(0, 2).join(" ")));
+
+    if (!isNameMatch) {
+      return {
+        valid: false,
+        status: "invalid_name",
+        message:
+          "عذراً، الاسم المدخل غير مطابق للاسم المسجل لهذا الرقم في ورقة (المشتركين). يرجى التأكد من كتابة الاسم الصحيح."
+      };
+    }
+
+    // Check if student already answered
+    if (analysisSettings.preventDuplicateSubmission && matchedById.hasAnswered) {
+      return {
+        valid: false,
+        status: "already_answered",
+        subscriber: matchedById,
+        message: "لقد قمت بالإجابة على هذا الاستبيان مسبقاً وتم تسجيل نتيجتك. لا يُسمح بالإجابة مرة أخرى."
+      };
+    }
+
+    return {
+      valid: true,
+      status: "ok",
+      subscriber: matchedById,
+      message: `مرحباً بك ${matchedById.studentName}! تم التحقق من بياناتك بنجاح.`
+    };
+  }
+
+  // If strictSubscriberLogin is enabled (default: true), block any student not found in المشتركين
+  if (analysisSettings.strictSubscriberLogin) {
+    return {
+      valid: false,
+      status: "not_found",
+      message:
+        "عذراً، رقم المشترك أو الاسم غير مسجل في ورقة (المشتركين). لا يمكن فتح الاستبيان إلا للمشتركين المسجلين مسبقاً."
+    };
+  }
+
+  // If strict login was manually disabled by admin in settings, allow entry
+  return {
+    valid: true,
+    status: "ok",
+    subscriber: {
+      rowIndex: 0,
+      sequence: "-",
+      studentId: studentId.trim(),
+      studentName: studentName.trim(),
+      hasAnswered: false
+    },
+    message: "تم تأكيد البيانات بنجاح."
+  };
+}
+
+/**
+ * Updates a subscriber's row in the "المشتركين" sheet (Score, Combined Answers, AI Analysis, or Reset)
+ */
+export async function updateSubscriberRowBridge(
+  studentId: string,
+  studentName: string,
+  updates: {
+    totalScore?: string | number;
+    combinedAnswers?: string;
+    aiAnalysis?: string;
+    hasAnswered?: boolean;
+  },
+  explicitScriptUrl?: string
+): Promise<{ success: boolean; message: string }> {
+  const targetScriptUrl = explicitScriptUrl || getActiveScriptUrl();
+
+  // 1. Save immediately in local override
+  saveLocalSubscriberOverride(studentId, {
+    studentId,
+    studentName,
+    ...updates
+  });
+
+  const payload = {
+    action: "updateSubscriberRow",
+    targetSheet: "المشتركين",
+    registrationId: studentId,
+    studentId,
+    studentName,
+    totalScore: updates.totalScore ?? "",
+    combinedAnswers: updates.combinedAnswers ?? "",
+    aiAnalysis: updates.aiAnalysis ?? "",
+    clearAnswer: updates.hasAnswered === false
+  };
+
+  // 2. Send via /api/register proxy
+  try {
+    const res = await fetch("/api/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...payload,
+        scriptUrl: targetScriptUrl
+      })
+    });
+    if (res.ok) {
+      return {
+        success: true,
+        message: "تم تحديث صف المشترك في ورقة (المشتركين) بنجاح!"
+      };
+    }
+  } catch (e) {}
+
+  // 3. Direct POST to Apps Script
+  try {
+    await fetch(targetScriptUrl, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload)
+    });
+  } catch (e) {}
+
+  return {
+    success: true,
+    message: "تم حفظ التحديث في سجل المشتركين بنجاح!"
+  };
+}
+
+/**
+ * Saves/syncs the full list of subscribers to the "المشتركين" sheet in Google Sheets
+ */
+export async function saveSubscribersToSheetBridge(
+  subscribers: SubscriberRecord[],
+  explicitScriptUrl?: string
+): Promise<{ success: boolean; message: string }> {
+  const targetScriptUrl = explicitScriptUrl || getActiveScriptUrl();
+
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.setItem(SUBSCRIBERS_CACHE_KEY, JSON.stringify(subscribers));
+    } catch (e) {}
+  }
+
+  const payload = {
+    action: "saveSubscribers",
+    targetSheet: "المشتركين",
+    subscribers
+  };
+
+  try {
+    const res = await fetch("/api/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...payload,
+        scriptUrl: targetScriptUrl
+      })
+    });
+    if (res.ok) {
+      return {
+        success: true,
+        message: "تمت مزامنة وحفظ قائمة المشتركين في ورقة (المشتركين) في قوقل شيت بنجاح!"
+      };
+    }
+  } catch (e) {}
+
+  try {
+    await fetch(targetScriptUrl, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload)
+    });
+  } catch (e) {}
+
+  return {
+    success: true,
+    message: "تم حفظ قائمة المشتركين بنجاح!"
   };
 }

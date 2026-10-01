@@ -80,6 +80,8 @@ export interface FormSubmissionPayload {
     type?: string;
     score?: number;
   }>;
+  combinedAnswers?: string;
+  aiAnalysis?: string;
   totalScore?: number;
   hasScoredQuestions?: boolean;
   attachment?: string;
@@ -89,6 +91,27 @@ export interface FormSubmissionPayload {
   emailConfig?: Partial<SubscriberEmailConfig>;
   telegramConfig?: Partial<TelegramConfig>;
   [key: string]: any;
+}
+
+export interface SubscriberRecord {
+  rowIndex: number;
+  sequence: string | number;     // Column A: رقم التسلسل
+  studentId: string;             // Column B: Student ID
+  studentName: string;           // Column C: Student Name
+  totalScore?: string | number;  // Column D: عدد مجموع النقاط
+  combinedAnswers?: string;      // Column E: تجميع كل الإجابات (|||)
+  aiAnalysis?: string;           // Column F: تحليل الذكاء الاصطناعي
+  hasAnswered: boolean;
+}
+
+export interface AnalysisSettings {
+  goal: string;
+  criteria: string[];
+  customInstructions: string;
+  autoAnalyzeOnSubmit: boolean;
+  strictSubscriberLogin: boolean;
+  preventDuplicateSubmission: boolean;
+  isFormClosed: boolean;
 }
 
 export interface SubmissionResponse {

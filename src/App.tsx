@@ -38,8 +38,10 @@ import {
   submitRegistrationBridge,
   fetchFormQuestionsBridge,
   extractScoreFromAnswer,
-  isScoredQuestionType
+  isScoredQuestionType,
+  verifySubscriberInSheetBridge
 } from "./utils/googleBackendBridge";
+import { analyzeSubscriberAnswers, getAnalysisSettings } from "./utils/aiAnalyzer";
 import {
   Send,
   Loader2,
@@ -48,7 +50,8 @@ import {
   CheckCircle2,
   FileSpreadsheet,
   Info,
-  ShieldCheck
+  ShieldCheck,
+  Lock
 } from "lucide-react";
 
 export default function App() {
@@ -120,34 +123,85 @@ export default function App() {
   const [manualSubId, setManualSubId] = useState("");
   const [manualSubName, setManualSubName] = useState("");
   const [subscriberError, setSubscriberError] = useState<string | null>(null);
+  const [isSubscriberVerified, setIsSubscriberVerified] = useState<boolean>(false);
+  const [isVerifyingSubscriber, setIsVerifyingSubscriber] = useState<boolean>(false);
+  const [alreadyAnswered, setAlreadyAnswered] = useState<boolean>(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
-  // Auto-detect subscriber session on mount
+  const handleVerifyAndSaveSubscriber = useCallback(
+    async (id: string, name: string, customScriptUrl?: string, customSheetId?: string) => {
+      const cleanId = id.trim();
+      const cleanName = name.trim();
+      if (!cleanId || !cleanName) {
+        setIsSubscriberVerified(false);
+        return;
+      }
+
+      setIsVerifyingSubscriber(true);
+      setSubscriberError(null);
+
+      try {
+        const check = await verifySubscriberInSheetBridge(
+          cleanId,
+          cleanName,
+          customScriptUrl || getActiveScriptUrl(),
+          customSheetId || getActiveSpreadsheetId()
+        );
+
+        if (check.valid && check.status === "ok") {
+          const finalId = check.subscriber?.studentId || cleanId;
+          const finalName = check.subscriber?.studentName || cleanName;
+          const saved = saveSubscriberSession(finalId, finalName, "manual");
+          setSubscriber(saved);
+          setManualSubId(finalId);
+          setManualSubName(finalName);
+          setIsSubscriberVerified(true);
+          setAlreadyAnswered(false);
+          setSubscriberError(null);
+        } else if (check.status === "already_answered") {
+          const finalId = check.subscriber?.studentId || cleanId;
+          const finalName = check.subscriber?.studentName || cleanName;
+          setSubscriber({ id: finalId, name: finalName, source: "manual" });
+          setManualSubId(finalId);
+          setManualSubName(finalName);
+          setIsSubscriberVerified(false);
+          setAlreadyAnswered(true);
+          setSubscriberError(check.message);
+        } else {
+          setIsSubscriberVerified(false);
+          setAlreadyAnswered(false);
+          setSubscriberError(check.message);
+        }
+      } catch (err) {
+        setIsSubscriberVerified(false);
+        setSubscriberError("تعذر التحقق من سجل المشتركين، يرجى المحاولة مرة أخرى.");
+      } finally {
+        setIsVerifyingSubscriber(false);
+      }
+    },
+    []
+  );
+
+  // Auto-detect subscriber session on mount and verify against المشتركين sheet
   useEffect(() => {
     const session = detectSubscriberSession();
-    if (session) {
-      setSubscriber(session);
-      setManualSubId(session.id || "");
-      setManualSubName(session.name || "");
+    if (session && session.id && session.name) {
+      setManualSubId(session.id);
+      setManualSubName(session.name);
+      handleVerifyAndSaveSubscriber(session.id, session.name);
     }
-  }, []);
-
-  const handleSaveSubscriber = (id: string, name: string) => {
-    const cleanId = id.trim();
-    const cleanName = name.trim();
-    if (!cleanId) return;
-
-    const saved = saveSubscriberSession(cleanId, cleanName, "manual");
-    setSubscriber(saved);
-    setManualSubId(cleanId);
-    setManualSubName(cleanName);
-    setSubscriberError(null);
-  };
+  }, [handleVerifyAndSaveSubscriber]);
 
   const handleClearSubscriber = () => {
     clearSubscriberSession();
     setSubscriber(null);
     setManualSubId("");
     setManualSubName("");
+    setIsSubscriberVerified(false);
+    setAlreadyAnswered(false);
+    setSubscriberError(null);
+    setAnswers({});
+    setErrors({});
   };
 
   // Helper: check if a question is asking for subscriber identity
@@ -259,11 +313,11 @@ export default function App() {
   const validateForm = (): boolean => {
     const newErrors: Record<string, string> = {};
 
-    // 1. Verify subscriber identity
+    // 1. Verify subscriber identity & verification status
     const currentId = (subscriber?.id || manualSubId).trim();
     const currentName = (subscriber?.name || manualSubName).trim();
-    if (!currentId || !currentName) {
-      setSubscriberError("يرجى تدوين رقم المشترك واسمك الكامل للمتابعة.");
+    if (!currentId || !currentName || !isSubscriberVerified || alreadyAnswered) {
+      setSubscriberError("يرجى إدخال رقم المشترك واسمك الصحيحين والتحقق منهما لفتح الاستبيان.");
       const cardEl = document.getElementById("subscriber-card-container");
       if (cardEl) {
         cardEl.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -342,6 +396,7 @@ export default function App() {
     }
 
     setIsSubmitting(true);
+    setSubmitError(null);
     setSubmissionProgress(t.submitting);
 
     const activeSubId = (subscriber?.id || manualSubId).trim();
@@ -349,9 +404,17 @@ export default function App() {
     let detectedPhone = "";
     let detectedEmail = "";
 
-    // Auto-persist manual entry
-    if (activeSubId && activeSubName && !subscriber) {
-      saveSubscriberSession(activeSubId, activeSubName, "manual");
+    // Double-check duplicate submission before sending
+    const preCheck = await verifySubscriberInSheetBridge(activeSubId, activeSubName, scriptUrl, spreadsheetId);
+    if (!preCheck.valid) {
+      setIsSubmitting(false);
+      setSubmissionProgress(null);
+      if (preCheck.status === "already_answered") {
+        setAlreadyAnswered(true);
+        setIsSubscriberVerified(false);
+      }
+      setSubscriberError(preCheck.message);
+      return;
     }
 
     // Format answers array: contains ONLY the actual question answers in strict order
@@ -402,6 +465,43 @@ export default function App() {
       }
     });
 
+    // Combine all answers separated by " ||| " for Column E of المشتركين sheet
+    // (Never put raw base64 data into combinedAnswers; submitRegistrationBridge will replace it with the Drive URL)
+    const combinedAnswers = formattedAnswers
+      .map((item) => {
+        const raw = item.answer && item.answer.trim() ? item.answer.trim() : "-";
+        if (raw.startsWith("data:") || raw.includes("base64,")) {
+          return "[صورة مرفقة]";
+        }
+        return raw;
+      })
+      .join(" ||| ");
+
+    // Run AI Analysis for Column F of المشتركين sheet (for administration only)
+    let aiAnalysisText = "";
+    const analysisSettings = getAnalysisSettings();
+    if (analysisSettings.autoAnalyzeOnSubmit) {
+      try {
+        const sanitizedAnswersForAi = formattedAnswers.map((item) => ({
+          ...item,
+          answer:
+            item.answer && (item.answer.startsWith("data:") || item.answer.includes("base64,"))
+              ? "[تم إرفاق صورة كتابة المشترك]"
+              : item.answer
+        }));
+        aiAnalysisText = await analyzeSubscriberAnswers({
+          studentId: activeSubId,
+          studentName: activeSubName,
+          totalScore,
+          answers: sanitizedAnswersForAi,
+          combinedAnswers,
+          settings: analysisSettings
+        });
+      } catch (aiErr) {
+        console.warn("AI analysis note:", aiErr);
+      }
+    }
+
     try {
       const result = await submitRegistrationBridge({
         registrationId: activeSubId,
@@ -410,6 +510,8 @@ export default function App() {
         phone: detectedPhone,
         email: detectedEmail,
         answers: formattedAnswers,
+        combinedAnswers,
+        aiAnalysis: aiAnalysisText,
         totalScore,
         hasScoredQuestions,
         attachment: attachmentData,
@@ -423,6 +525,8 @@ export default function App() {
       setSubmissionProgress(null);
 
       if (result && result.success) {
+        setAlreadyAnswered(true);
+        setIsSubscriberVerified(false);
         setSuccessData({
           id: result.registrationId || activeSubId,
           timestamp: result.timestamp || new Date().toLocaleString("ar-IQ"),
@@ -432,12 +536,12 @@ export default function App() {
         setIsSuccess(true);
         window.scrollTo({ top: 0, behavior: "smooth" });
       } else {
-        alert(result?.error || "حدث خطأ أثناء الإرسال، يرجى إعادة المحاولة.");
+        setSubmitError(result?.error || "حدث خطأ أثناء الإرسال، يرجى إعادة المحاولة.");
       }
     } catch (err: any) {
       setIsSubmitting(false);
       setSubmissionProgress(null);
-      alert("تعذر إرسال البيانات: " + err.message);
+      setSubmitError("تعذر إرسال البيانات: " + (err?.message || ""));
     }
   };
 
@@ -551,11 +655,16 @@ export default function App() {
               </p>
             </div>
 
-            {/* Subscriber Identity Card */}
+            {/* Subscriber Identity & Login Gate Card */}
             <div id="subscriber-card-container">
               <SubscriberCard
                 subscriber={subscriber}
-                onSaveSubscriber={handleSaveSubscriber}
+                isVerified={isSubscriberVerified}
+                isVerifying={isVerifyingSubscriber}
+                alreadyAnswered={alreadyAnswered}
+                onVerifyAndSaveSubscriber={(id, name) =>
+                  handleVerifyAndSaveSubscriber(id, name, scriptUrl, spreadsheetId)
+                }
                 onClearSubscriber={handleClearSubscriber}
                 error={subscriberError}
                 manualId={manualSubId}
@@ -571,71 +680,94 @@ export default function App() {
               />
             </div>
 
-            {/* Validation Notice if errors */}
-            {Object.keys(errors).length > 0 && (
-              <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-3 animate-in fade-in">
+            {/* Submit Error Banner */}
+            {submitError && (
+              <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold flex items-center gap-3 animate-in fade-in">
                 <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
-                <div>
-                  <span className="font-bold block">{t.validationErrorTitle}</span>
-                  <span>يرجى استكمال الحقول المطلوبة باللون الأحمر أدناه للمتابعة.</span>
-                </div>
+                <span>{submitError}</span>
               </div>
             )}
 
-            {/* Form Fields Container */}
-            <form onSubmit={handleSubmit} noValidate className="space-y-4">
-              {/* Invisible Honeypot */}
-              <input
-                type="text"
-                name="website_url_hp"
-                tabIndex={-1}
-                autoComplete="off"
-                value={honeypot}
-                onChange={(e) => setHoneypot(e.target.value)}
-                className="sr-only"
-                aria-hidden="true"
-              />
-
-              {displayedQuestions.map((question, index) => (
-                <FormField
-                  key={`${question.id}-${translationVersion}`}
-                  question={question}
-                  index={index}
-                  value={answers[String(question.id)] || ""}
-                  error={errors[String(question.id)]}
-                  currentLang={currentLang}
-                  onChange={(val) => handleAnswerChange(question.id, val)}
-                />
-              ))}
-
-              {/* Submit Button */}
-              <div className="pt-4 sticky bottom-4 z-20">
-                <div className="bg-white/90 backdrop-blur-md p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-lg flex flex-col sm:flex-row items-center justify-between gap-3">
-                  <div className="text-xs text-slate-500 hidden sm:flex items-center gap-1.5">
-                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                    <span>تشفير آمن للبيانات ومزامنة مباشرة مع الشيت</span>
+            {/* Questionnaire is ONLY unlocked after Subscriber ID & Name are verified against المشتركين sheet */}
+            {isSubscriberVerified && !alreadyAnswered ? (
+              <>
+                {/* Validation Notice if errors */}
+                {Object.keys(errors).length > 0 && (
+                  <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-3 animate-in fade-in">
+                    <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
+                    <div>
+                      <span className="font-bold block">{t.validationErrorTitle}</span>
+                      <span>يرجى استكمال الحقول المطلوبة باللون الأحمر أدناه للمتابعة.</span>
+                    </div>
                   </div>
+                )}
 
-                  <button
-                    type="submit"
-                    disabled={isSubmitting}
-                    className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm sm:text-base transition-all shadow-md active:scale-98 flex items-center justify-center gap-2.5 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                  >
-                    {isSubmitting ? (
-                      <>
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                        <span>{submissionProgress || t.submitting}</span>
-                      </>
-                    ) : (
-                      <>
-                        <Send className="w-4 h-4" />
-                        <span>{t.submitButton}</span>
-                      </>
-                    )}
-                  </button>
-                </div>
+                {/* Form Fields Container */}
+                <form onSubmit={handleSubmit} noValidate className="space-y-4 animate-in fade-in duration-300">
+                  {/* Invisible Honeypot */}
+                  <input
+                    type="text"
+                    name="website_url_hp"
+                    tabIndex={-1}
+                    autoComplete="off"
+                    value={honeypot}
+                    onChange={(e) => setHoneypot(e.target.value)}
+                    className="sr-only"
+                    aria-hidden="true"
+                  />
+
+                  {displayedQuestions.map((question, index) => (
+                    <FormField
+                      key={`${question.id}-${translationVersion}`}
+                      question={question}
+                      index={index}
+                      value={answers[String(question.id)] || ""}
+                      error={errors[String(question.id)]}
+                      currentLang={currentLang}
+                      onChange={(val) => handleAnswerChange(question.id, val)}
+                    />
+                  ))}
+
+                  {/* Submit Button */}
+                  <div className="pt-4 sticky bottom-4 z-20">
+                    <div className="bg-white/90 backdrop-blur-md p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-lg flex flex-col sm:flex-row items-center justify-between gap-3">
+                      <div className="text-xs text-slate-500 hidden sm:flex items-center gap-1.5">
+                        <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                        <span>تشفير آمن للبيانات وتسجيل مباشر في صفك بورقة المشتركين</span>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={isSubmitting}
+                        className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm sm:text-base transition-all shadow-md active:scale-98 flex items-center justify-center gap-2.5 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                      >
+                        {isSubmitting ? (
+                          <>
+                            <Loader2 className="w-5 h-5 animate-spin" />
+                            <span>{submissionProgress || t.submitting}</span>
+                          </>
+                        ) : (
+                          <>
+                            <Send className="w-4 h-4" />
+                            <span>{t.submitButton}</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              </>
+            ) : !alreadyAnswered ? (
+              <div className="bg-slate-100/80 border border-dashed border-slate-300 rounded-3xl p-8 text-center space-y-2.5 text-slate-500">
+                <Lock className="w-8 h-8 mx-auto text-slate-400" />
+                <h4 className="text-sm font-bold text-slate-700">
+                  أسئلة الاستبيان مقفلة حالياً
+                </h4>
+                <p className="text-xs max-w-md mx-auto leading-relaxed">
+                  يرجى إدخال <strong>رقم المشترك (Student ID)</strong> و<strong>الاسم الكامل (Student Name)</strong> في البطاقة أعلاه والضغط على <strong>«تحقق وفتح الاستبيان»</strong> لعرض الأسئلة والإجابة عليها.
+                </p>
               </div>
-            </form>
+            ) : null}
           </div>
         )}
       </main>
