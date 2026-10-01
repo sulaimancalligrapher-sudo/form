@@ -4,6 +4,8 @@
  * Proxies submission from Vercel to Google Apps Script Web App without browser CORS issues.
  */
 
+import { DEFAULT_SCRIPT_URL } from "../src/data/defaultConfig";
+
 export default async function handler(req: any, res: any) {
   // CORS headers
   res.setHeader("Access-Control-Allow-Credentials", "true");
@@ -30,14 +32,14 @@ export default async function handler(req: any, res: any) {
       payload.scriptUrl ||
       process.env.VITE_GOOGLE_SCRIPT_URL ||
       process.env.GOOGLE_SCRIPT_URL ||
-      "https://script.google.com/macros/s/AKfycbxkE4_o7pqoELsNkyJRP_bAy7Du51s2ztJatTD9wayK08Pwj_28RyOfGiMQomlIyIw_/exec";
+      DEFAULT_SCRIPT_URL;
 
     // Forward to Google Apps Script
     const gasResponse = await fetch(scriptUrl, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify({
-        action: "submitRegistration",
+        action: payload.action || "submitRegistration",
         ...payload
       })
     });

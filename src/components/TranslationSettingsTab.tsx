@@ -595,7 +595,13 @@ export const TranslationSettingsTab: React.FC<TranslationSettingsTabProps> = ({
               const valOptionsTh = customForQ.optionsTh !== undefined ? customForQ.optionsTh : (eff.optionsTh || []);
 
               const isButtonType = q.type === "button_title" || q.type === "عنوان زر";
-              const hasOptions = Array.isArray(q.options) && q.options.length > 0;
+              const isChoiceType =
+                q.type === "choice" ||
+                q.type === "scored_choice" ||
+                q.type === "multiple_choice" ||
+                String(q.type || "").includes("اختيار") ||
+                String(q.type || "").includes("choice");
+              const hasOptions = isChoiceType && Array.isArray(q.options) && q.options.length > 0;
               const qKey = q.question.trim();
               const isTranslatingAll = translatingKeys[`all_${qKey}`];
               const isTranslatingOpts = translatingKeys[`opts_all_${qKey}`];

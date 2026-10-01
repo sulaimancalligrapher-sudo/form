@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import { DEFAULT_SCRIPT_URL } from "./src/data/defaultConfig";
 
 dotenv.config();
 
@@ -146,14 +147,17 @@ ${trimmedText}`;
         const result = response?.text?.trim().replace(/^["'`]|["'`]$/g, "") || "";
         if (result) {
           if (isThai) {
-            const hasThaiChars = /[\u0E00-\u0E7F]/.test(result);
+            const hasThaiChars = /[\u0E00-\u0E7F]/.test(result) && !/[\u0600-\u06FF]/.test(result);
             if (hasThaiChars) {
               translatedText = result;
               break;
             }
           } else {
-            translatedText = result;
-            break;
+            const hasEnglishChars = /[a-zA-Z]/.test(result) && !/[\u0600-\u06FF]/.test(result);
+            if (hasEnglishChars) {
+              translatedText = result;
+              break;
+            }
           }
         }
       } catch (modelErr: any) {
@@ -168,6 +172,28 @@ ${trimmedText}`;
   if (translatedText) {
     return res.json({ success: true, translation: translatedText, source: "ai" });
   }
+
+  // 2. Server-side Google Translate GTX fallback (works without GEMINI_API_KEY for both EN & TH)
+  try {
+    const gtxUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=ar&tl=${targetLang}&dt=t&q=${encodeURIComponent(trimmedText)}`;
+    const gtxRes = await fetch(gtxUrl);
+    if (gtxRes.ok) {
+      const gtxData: any = await gtxRes.json();
+      if (Array.isArray(gtxData) && Array.isArray(gtxData[0])) {
+        const combined = gtxData[0]
+          .map((part: any) => (Array.isArray(part) && part[0] ? String(part[0]) : ""))
+          .join("")
+          .trim();
+        if (combined && !/[\u0600-\u06FF]/.test(combined)) {
+          return res.json({
+            success: true,
+            translation: combined,
+            source: "gtx"
+          });
+        }
+      }
+    }
+  } catch (e) {}
 
   // 2. Partial match search in dictionary
   for (const [key, val] of Object.entries(FORM_TERMS_DICTIONARY)) {
@@ -193,7 +219,7 @@ app.post("/api/register", async (req, res) => {
       payload.scriptUrl ||
       process.env.VITE_GOOGLE_SCRIPT_URL ||
       process.env.GOOGLE_SCRIPT_URL ||
-      "https://script.google.com/macros/s/AKfycbxkE4_o7pqoELsNkyJRP_bAy7Du51s2ztJatTD9wayK08Pwj_28RyOfGiMQomlIyIw_/exec";
+      DEFAULT_SCRIPT_URL;
 
     const gasResponse = await fetch(scriptUrl, {
       method: "POST",

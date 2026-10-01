@@ -155,12 +155,15 @@ ${trimmedText}`;
         const result = response?.text?.trim().replace(/^["'`]|["'`]$/g, "") || "";
         if (result) {
           if (isThai) {
-            const hasThaiChars = /[\u0E00-\u0E7F]/.test(result);
+            const hasThaiChars = /[\u0E00-\u0E7F]/.test(result) && !/[\u0600-\u06FF]/.test(result);
             if (hasThaiChars) {
               return res.status(200).json({ success: true, translation: result, source: "ai" });
             }
           } else {
-            return res.status(200).json({ success: true, translation: result, source: "ai" });
+            const hasEnglishChars = /[a-zA-Z]/.test(result) && !/[\u0600-\u06FF]/.test(result);
+            if (hasEnglishChars) {
+              return res.status(200).json({ success: true, translation: result, source: "ai" });
+            }
           }
         }
       } catch (err) {
@@ -169,7 +172,29 @@ ${trimmedText}`;
     }
   }
 
-  // 3. Partial Dictionary Matching
+  // 3. Server-side Google Translate GTX fallback (works on Vercel without GEMINI_API_KEY for both EN & TH)
+  try {
+    const gtxUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=ar&tl=${targetLang}&dt=t&q=${encodeURIComponent(trimmedText)}`;
+    const gtxRes = await fetch(gtxUrl);
+    if (gtxRes.ok) {
+      const gtxData: any = await gtxRes.json();
+      if (Array.isArray(gtxData) && Array.isArray(gtxData[0])) {
+        const combined = gtxData[0]
+          .map((part: any) => (Array.isArray(part) && part[0] ? String(part[0]) : ""))
+          .join("")
+          .trim();
+        if (combined && !/[\u0600-\u06FF]/.test(combined)) {
+          return res.status(200).json({
+            success: true,
+            translation: combined,
+            source: "gtx"
+          });
+        }
+      }
+    }
+  } catch (e) {}
+
+  // 4. Partial Dictionary Matching
   for (const [key, val] of Object.entries(FORM_TERMS_DICTIONARY)) {
     if (trimmedText.includes(key) || key.includes(trimmedText)) {
       const fallbackVal = isThai ? val.th : val.en;
@@ -179,10 +204,9 @@ ${trimmedText}`;
     }
   }
 
-  // 4. Return formatted original text as safe fallback
-  return res.status(200).json({
-    success: true,
-    translation: trimmedText,
-    source: "echo_fallback"
+  // 5. Return failure so client-side fallbacks (Apps Script / MyMemory) execute
+  return res.status(500).json({
+    success: false,
+    error: "Server translation fallback required"
   });
 }

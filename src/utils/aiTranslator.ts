@@ -45,27 +45,8 @@ const FORM_TERMS_DICTIONARY: Record<string, { en: string; th: string }> = {
   "مبتدئ": { en: "Beginner", th: "ระดับเริ่มต้น" },
   "متوسط": { en: "Intermediate", th: "ระดับปานกลาง" },
   "متقدم": { en: "Advanced", th: "ระดับสูง" },
-  "نعم": { en: "Yes", th: "ใช่" },
-  "لا": { en: "No", th: "ไม่" },
-  "✅ نعم = قط": { en: "✅ Yes = Ever", th: "✅ ใช่ = เคย" },
-  "❌ لا = ابدا": { en: "❌ No = Never", th: "❌ ไม่ = ไม่เคย" },
-  "✅ نعم": { en: "✅ Yes", th: "✅ ใช่" },
-  "❌ لا": { en: "❌ No", th: "❌ ไม่" },
-  "ذكر": { en: "Male", th: "ชาย" },
-  "أنثى": { en: "Female", th: "หญิง" },
-  "انثى": { en: "Female", th: "หญิง" },
-  "خط الرقعة": { en: "Ruq'ah Script", th: "อักษรริกอะห์ (Ruq'ah)" },
-  "خط النسخ": { en: "Naskh Script", th: "อักษรนัสคี (Naskh)" },
-  "خط الثلث": { en: "Thuluth Script", th: "อักษรซุลุษ (Thuluth)" },
-  "الخط الديواني": { en: "Diwani Script", th: "อักษรดีวานี (Diwani)" },
-  "الخط الكوفي": { en: "Kufic Script", th: "อักษรคูฟี (Kufic)" },
-  "الخط الفارسي": { en: "Persian / Ta'liq Script", th: "อักษรฟารซี (Persian)" },
-  "ممتاز": { en: "Excellent", th: "ดีเยี่ยม" },
-  "جيد جدا": { en: "Very Good", th: "ดีมาก" },
-  "جيد جداً": { en: "Very Good", th: "ดีมาก" },
-  "جيد": { en: "Good", th: "ดี" },
-  "مقبول": { en: "Fair", th: "พอใช้" },
-  "ضعيف": { en: "Weak", th: "อ่อน" },
+  "نعم": { en: "Yes", th: "ใช่ / เคย" },
+  "لا": { en: "No", th: "ไม่ / ไม่เคย" },
   "ملاحظات إضافية": { en: "Additional Notes", th: "หมายเหตุเพิ่มเติม" },
   "المرفقات": { en: "Attachments", th: "ไฟล์แนบ" },
   "صورة": { en: "Photo / Image", th: "รูปภาพ" },
@@ -93,11 +74,41 @@ const FORM_TERMS_DICTIONARY: Record<string, { en: string; th: string }> = {
 };
 
 /**
+ * Validates that a translated string actually translated into the target language
+ * and did not just echo back the Arabic source text.
+ */
+function isValidTranslation(
+  sourceText: string,
+  translated: string | undefined | null,
+  targetLang: "en" | "th"
+): boolean {
+  if (!translated || typeof translated !== "string") return false;
+  const clean = translated.trim();
+  if (!clean || clean.includes("MYMEMORY WARNING")) return false;
+
+  const sourceHasArabic = /[\u0600-\u06FF]/.test(sourceText);
+  const resultHasArabic = /[\u0600-\u06FF]/.test(clean);
+
+  // If the source was Arabic and the result still has Arabic or equals the source, reject it!
+  if (sourceHasArabic && (clean === sourceText.trim() || resultHasArabic)) {
+    return false;
+  }
+
+  if (targetLang === "th") {
+    return /[\u0E00-\u0E7F]/.test(clean);
+  }
+
+  // For English: ensure it has English / Latin characters
+  return /[a-zA-Z]/.test(clean);
+}
+
+/**
  * Translates text with a multi-layered fallback strategy:
- * 1. Exact / Partial Dictionary Match (0ms, 100% offline & client-side)
+ * 1. Exact Dictionary Match (0ms, 100% offline & client-side)
  * 2. Direct Server Endpoint (/api/translate - works in dev and Vercel serverless)
- * 3. Direct Google Apps Script Endpoint (?action=translate)
- * 4. Free Public Translation API (MyMemory) directly in browser
+ * 3. Direct Google Translate GTX API (works in browser without API keys for both EN & TH)
+ * 4. Direct Google Apps Script Endpoint (?action=translate via LanguageApp)
+ * 5. Free Public Translation API (MyMemory) directly in browser
  */
 export async function translateWithAi(
   text: string,
@@ -108,37 +119,20 @@ export async function translateWithAi(
     return "";
   }
 
-  const rawTrimmed = text.trim();
+  const trimmedText = text.trim();
   const isThai = targetLang === "th";
 
-  // Check if text has a leading score prefix like "1 - مبتدئ" or "2-متوسط"
-  let scorePrefix = "";
-  let trimmedText = rawTrimmed;
-  const prefixMatch = rawTrimmed.match(/^(\d+(?:\.\d+)?\s*[-—–ـ:]\s*)(.+)$/);
-  if (prefixMatch && prefixMatch[1] && prefixMatch[2]) {
-    scorePrefix = prefixMatch[1];
-    trimmedText = prefixMatch[2].trim();
-  }
-
-  const withPrefix = (val: string) => (scorePrefix ? `${scorePrefix}${val}` : val);
-
   // 1. Instant Exact Dictionary Match
-  const exactFull = FORM_TERMS_DICTIONARY[rawTrimmed];
-  if (exactFull) {
-    const res = isThai ? exactFull.th : exactFull.en;
+  const exact = FORM_TERMS_DICTIONARY[trimmedText];
+  if (exact) {
+    const res = isThai ? exact.th : exact.en;
     if (res) return res;
-  }
-
-  const exactCore = FORM_TERMS_DICTIONARY[trimmedText];
-  if (exactCore) {
-    const res = isThai ? exactCore.th : exactCore.en;
-    if (res) return withPrefix(res);
   }
 
   // 2. Try Server /api/translate endpoint if available
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2500);
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
 
     const res = await fetch("/api/translate", {
       method: "POST",
@@ -150,19 +144,19 @@ export async function translateWithAi(
 
     if (res.ok) {
       const data = await res.json();
-      if (data.success && typeof data.translation === "string" && data.translation.trim()) {
-        const trans = data.translation.trim();
-        // If target is Thai, ensure it has Thai characters or fallback
-        if (!isThai || /[\u0E00-\u0E7F]/.test(trans)) {
-          return withPrefix(trans);
-        }
+      if (
+        data.success &&
+        data.source !== "echo_fallback" &&
+        isValidTranslation(trimmedText, data.translation, targetLang)
+      ) {
+        return data.translation.trim();
       }
     }
   } catch (err) {
     // /api/translate not available or timed out, continue to client fallbacks
   }
 
-  // 3. Try Google Translate free GTX endpoint (ultra-fast, supports English and Thai script natively)
+  // 3. Try Direct Google Translate GTX Endpoint (fast, accurate for both EN and TH without API keys)
   try {
     const gtxUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=ar&tl=${targetLang}&dt=t&q=${encodeURIComponent(trimmedText)}`;
     const controller = new AbortController();
@@ -175,11 +169,11 @@ export async function translateWithAi(
       const gtxData = await gtxRes.json();
       if (Array.isArray(gtxData) && Array.isArray(gtxData[0])) {
         const combined = gtxData[0]
-          .map((seg: any) => (Array.isArray(seg) && seg[0] ? String(seg[0]) : ""))
+          .map((part: any) => (Array.isArray(part) && part[0] ? String(part[0]) : ""))
           .join("")
           .trim();
-        if (combined) {
-          return withPrefix(combined);
+        if (isValidTranslation(trimmedText, combined, targetLang)) {
+          return combined;
         }
       }
     }
@@ -200,8 +194,12 @@ export async function translateWithAi(
 
       if (gasRes.ok) {
         const gasData = await gasRes.json();
-        if (gasData && gasData.success && gasData.translation) {
-          return withPrefix(gasData.translation.trim());
+        if (
+          gasData &&
+          gasData.success &&
+          isValidTranslation(trimmedText, gasData.translation, targetLang)
+        ) {
+          return gasData.translation.trim();
         }
       }
     } catch (e) {
@@ -221,10 +219,10 @@ export async function translateWithAi(
     if (memRes.ok) {
       const memData = await memRes.json();
       const translated = memData?.responseData?.translatedText;
-      if (translated && typeof translated === "string" && translated.trim()) {
+      if (typeof translated === "string") {
         const clean = translated.trim().replace(/^["']|["']$/g, "");
-        if (!clean.includes("MYMEMORY WARNING")) {
-          return withPrefix(clean);
+        if (isValidTranslation(trimmedText, clean, targetLang)) {
+          return clean;
         }
       }
     }
@@ -236,10 +234,10 @@ export async function translateWithAi(
   for (const [key, val] of Object.entries(FORM_TERMS_DICTIONARY)) {
     if (trimmedText.includes(key) || key.includes(trimmedText)) {
       const matchVal = isThai ? val.th : val.en;
-      if (matchVal) return withPrefix(matchVal);
+      if (matchVal) return matchVal;
     }
   }
 
   // 7. Echo back if all else fails
-  return rawTrimmed;
+  return trimmedText;
 }

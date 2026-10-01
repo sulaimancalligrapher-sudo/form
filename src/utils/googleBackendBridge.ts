@@ -123,9 +123,12 @@ export function getActiveScriptUrl(): string {
         // Automatically upgrade outdated known default URLs to the new updated backend
         if (
           saved.includes("AKfycbwxn8Q7W9Db") ||
-          saved.includes("AKfycbyl2_TnMESST")
+          saved.includes("AKfycbyl2_TnMESST") ||
+          saved.includes("AKfycbwO6_PHYlPNg")
         ) {
           localStorage.setItem("sheet_form_script_url", DEFAULT_SCRIPT_URL);
+          localStorage.removeItem("thnoon_cached_registration_questions");
+          localStorage.removeItem("thnoon_questions_admin_modified");
           return DEFAULT_SCRIPT_URL;
         }
         return saved.trim();
