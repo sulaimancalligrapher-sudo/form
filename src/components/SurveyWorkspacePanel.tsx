@@ -790,8 +790,10 @@ export const SurveyWorkspacePanel: React.FC<SurveyWorkspacePanelProps> = ({
           {connectedSubTab === "analysis" && (
             <div>
               <AnalysisSettingsTab
+                key={`analysis-survey-${activeSurveyId}`}
                 darkMode={true}
                 surveyId={activeSurveyId}
+                surveyTitle={currentSurvey?.title || `الاستبيان ${activeSurveyId}`}
               />
             </div>
           )}

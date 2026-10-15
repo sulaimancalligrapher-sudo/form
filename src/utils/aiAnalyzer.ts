@@ -10,83 +10,211 @@ import { AnalysisSettings } from "../types";
 
 const ANALYSIS_SETTINGS_STORAGE_KEY = "thnoon_analysis_settings_v1";
 
-export const DEFAULT_ANALYSIS_GOAL =
-  "التعرف على المتعلم قبل دخوله البرنامج: دوافعه، أهدافه، طريقة تعامله مع التعلم، الصبر، الاستمرارية، تقبل التوجيه والتصحيح، التركيز، والتعامل مع المعلم والآخرين.";
+export interface StageAnalysisPreset {
+  goal: string;
+  criteria: string[];
+  customInstructions: string;
+}
 
-export const DEFAULT_ANALYSIS_CRITERIA: string[] = [
-  "من هو المتعلم؟",
-  "لماذا يريد تعلم الخط؟",
-  "هل الرغبة منه أم من الآخرين؟",
-  "الميل الفني والملاحظة",
-  "الصبر",
-  "الاستمرارية",
-  "وضوح الهدف",
-  "تقبل التعليم",
-  "تقبل التصحيح",
-  "التركيز والدقة",
-  "التعامل مع المعلم والآخرين"
-];
+/**
+ * Stage-tailored analysis presets for multi-stage educational and training evaluation
+ */
+export const STAGE_ANALYSIS_PRESETS: Record<number, StageAnalysisPreset> = {
+  1: {
+    goal: "التعرف على المتعلم قبل دخوله البرنامج التدريبي: دوافعه، أهدافه، شغفه، صبره، استمراريته، تقبل التوجيه والتصحيح، التركيز، والتعامل مع المعلم والآخرين.",
+    criteria: [
+      "من هو المتعلم؟",
+      "لماذا يريد الانضمام للبرنامج؟",
+      "هل الرغبة منه أم من الآخرين؟",
+      "الميل الفني وقوة الملاحظة",
+      "الصبر والتحمل",
+      "الاستمرارية والانضباط",
+      "وضوح الهدف والغاية",
+      "تقبل التعليم والتطوير",
+      "تقبل التصحيح والتوجيه",
+      "التركيز والدقة",
+      "التعامل مع المعلم والزملاء"
+    ],
+    customInstructions:
+      "يرجى قراءة نصوص إجابات المشترك ومجموع نقاطه بدقة، وكتابة تحليل واضح ومختصر أمام كل محور من المحاور أعلاه (مع وضع نسبة مئوية تقديرية % للمحاور المهارية والسلوكية من واقع إجاباته)، ثم ختم التقرير بتوصية موجزة للإدارة والمعلم."
+  },
+  2: {
+    goal: "تقييم أداء المشترك ومدى استيعابه للمهارات والقواعد الأساسية بعد المرحلة الأولى: الالتزام بالتمارين، سرعة الاستجابة للتوجيهات، والتطور الملموس في التطبيقات.",
+    criteria: [
+      "مدى استيعاب القواعد والأساسيات",
+      "الانضباط وأداء التمارين المطلوبة",
+      "التطور الملحوظ مقارنة بالبداية",
+      "دقة التنفيذ والمحاكاة",
+      "الصبر في تكرار التمارين ومعالجة الأخطاء",
+      "سرعة تطبيق ملاحظات المعلم وتعديل الأداء",
+      "إدارة الوقت والالتزام بالمواعيد",
+      "الشغف والاستعداد للمستوى التالي"
+    ],
+    customInstructions:
+      "يرجى تحليل إجابات المشترك الخاصة بالمرحلة الثانية، وتقييم تطوره العملي بنسب مئوية % واضحة، وتحديد نقاط القوة ونقاط التحسين المطلوب التركيز عليها قبل الانتقال للمرحلة التالية."
+  },
+  3: {
+    goal: "قياس مستوى الإتقان والنضج الفني للمشترك في المرحلة المتقدمة: عمق الفهم، دقة التفاصيل، القدرة على النقد والتقييم الذاتي، والاستقلالية في العمل.",
+    criteria: [
+      "دقة النسب والمقاييس والتركيز في التفاصيل",
+      "الحس الجمالي واللمسات المتقدمة",
+      "القدرة على النقد الذاتي واكتشاف الأخطاء وتصحيحها",
+      "الاستمرارية وجودة الأداء تحت ضغط التمارين",
+      "التفكير الإبداعي والابتكار في التطبيق",
+      "التفاعل البناء مع المعلم والزملاء",
+      "مستوى الجاهزية للمرحلة الختامية والإنتاج النهائي"
+    ],
+    customInstructions:
+      "يرجى تحليل إجابات المشترك في هذه المرحلة المتقدمة مع التركيز على جودة الإتقان، ووضع نسب مئوية % لكل محور، وتحديد هل المشترك جاهز للمشروع النهائي والتخرج."
+  },
+  4: {
+    goal: "التقييم الشامل والنهائي لمخرجات المشترك: قياس الأثر التحويلي للبرنامج التدريبي، الجاهزية للإنتاج المستقل أو التخرج، والتوصية بمستقبله ومساره التدريبي أو المهني.",
+    criteria: [
+      "الإنجاز الكلي وجودة المخرجات والمشروع النهائي",
+      "الأثر التحويلي والفارق الملموس بين البداية والنهاية",
+      "الاستقلالية والقدرة على العمل والإنتاج المنفرد",
+      "الالتزام بالمعايير المهنية العالية وجودة الإتقان",
+      "المهارات الشخصية والسلوكية المكتسبة خلال البرنامج",
+      "القدرة على نقل الخبرة أو تعليم الآخرين",
+      "التوصية الختامية للإدارة: الاعتماد / التخرج / مسار التطوير المستقبلي"
+    ],
+    customInstructions:
+      "يرجى كتابة تقرير تقييم ختامي شامل للمشترك يلخص مسيرته عبر المراحل، بنسب إنجاز نهائية %، وخاتمة بتوصية واضحة ومباشرة للإدارة بشأن التخرج أو الاعتماد."
+  }
+};
+
+export const DEFAULT_ANALYSIS_GOAL = STAGE_ANALYSIS_PRESETS[1].goal;
+export const DEFAULT_ANALYSIS_CRITERIA = STAGE_ANALYSIS_PRESETS[1].criteria;
 
 export const DEFAULT_ANALYSIS_SETTINGS: AnalysisSettings = {
   goal: DEFAULT_ANALYSIS_GOAL,
   criteria: DEFAULT_ANALYSIS_CRITERIA,
-  customInstructions:
-    "يرجى قراءة نصوص إجابات المشترك ومجموع نقاطه بدقة، وكتابة تحليل واضح ومختصر أمام كل عنصر من العناصر أعلاه (مع وضع نسبة مئوية تقديرية % للعناصر المهارية والسلوكية من واقع إجاباته)، ثم ختم التقرير بتوصية موجزة للإدارة والمعلم.",
+  customInstructions: STAGE_ANALYSIS_PRESETS[1].customInstructions,
   autoAnalyzeOnSubmit: true,
   strictSubscriberLogin: true,
   preventDuplicateSubmission: true,
   isFormClosed: false
 };
 
-function getStorageKeyForSurvey(surveyId: number = 1): string {
+/**
+ * Returns stage-appropriate default analysis settings for any survey ID (1, 2, 3, 4...)
+ */
+export function getDefaultAnalysisSettingsForSurvey(surveyId: number = 1): AnalysisSettings {
   const cleanId = Math.max(1, Math.floor(Number(surveyId) || 1));
-  return cleanId === 1
-    ? ANALYSIS_SETTINGS_STORAGE_KEY
-    : `${ANALYSIS_SETTINGS_STORAGE_KEY}_s${cleanId}`;
+  const preset = STAGE_ANALYSIS_PRESETS[cleanId] || {
+    goal: `تقييم ومتابعة أداء المشترك في استبيان المرحلة (${cleanId}): قياس الأهداف الخاصة بهذه المرحلة ومدى تطور المشترك والتزامه.`,
+    criteria: [
+      `مدى تحقق أهداف المرحلة ${cleanId}`,
+      "الانضباط والاستمرارية في التدريب",
+      "دقة التطبيق ومستوى الجودة",
+      "الاستجابة لملاحظات المعلم",
+      "التحديات والصعوبات وسبل معالجتها",
+      "التوصيات والمقترحات للمرحلة التالية"
+    ],
+    customInstructions: `يرجى تحليل إجابات المشترك لاستبيان المرحلة ${cleanId} بدقة وكتابة تقييم موجز بنسب مئوية % لكل محور مع توصية للإدارة.`
+  };
+
+  return {
+    goal: preset.goal,
+    criteria: [...preset.criteria],
+    customInstructions: preset.customInstructions,
+    autoAnalyzeOnSubmit: true,
+    strictSubscriberLogin: true,
+    preventDuplicateSubmission: true,
+    isFormClosed: false
+  };
 }
 
+function getStorageKeyForSurvey(surveyId: number = 1): string {
+  const cleanId = Math.max(1, Math.floor(Number(surveyId) || 1));
+  return `thnoon_analysis_settings_s${cleanId}_v2`;
+}
+
+/**
+ * Retrieves the isolated analysis settings for a specific survey ID.
+ * Never leaks or copies another survey's custom goals/criteria.
+ */
 export function getAnalysisSettings(surveyId: number = 1): AnalysisSettings {
+  const cleanId = Math.max(1, Math.floor(Number(surveyId) || 1));
+  const fallbackDefaults = getDefaultAnalysisSettingsForSurvey(cleanId);
+
   if (typeof window !== "undefined") {
     try {
-      const key = getStorageKeyForSurvey(surveyId);
-      const raw = localStorage.getItem(key) || (surveyId > 1 ? localStorage.getItem(ANALYSIS_SETTINGS_STORAGE_KEY) : null);
+      const primaryKey = getStorageKeyForSurvey(cleanId);
+      let raw = localStorage.getItem(primaryKey);
+
+      // Backwards compatibility with v1 keys (strictly for the same survey ID only, never leaking survey 1 to others)
+      if (!raw) {
+        if (cleanId === 1) {
+          raw = localStorage.getItem(ANALYSIS_SETTINGS_STORAGE_KEY);
+        } else {
+          raw = localStorage.getItem(`${ANALYSIS_SETTINGS_STORAGE_KEY}_s${cleanId}`);
+        }
+      }
+
       if (raw) {
         const parsed = JSON.parse(raw);
         return {
-          ...DEFAULT_ANALYSIS_SETTINGS,
+          ...fallbackDefaults,
           ...parsed,
+          goal: typeof parsed.goal === "string" && parsed.goal.trim() ? parsed.goal : fallbackDefaults.goal,
           criteria:
             Array.isArray(parsed.criteria) && parsed.criteria.length > 0
               ? parsed.criteria
-              : DEFAULT_ANALYSIS_CRITERIA
+              : fallbackDefaults.criteria,
+          customInstructions:
+            typeof parsed.customInstructions === "string" && parsed.customInstructions.trim()
+              ? parsed.customInstructions
+              : fallbackDefaults.customInstructions
         };
       }
     } catch (e) {
-      console.warn("Failed to read analysis settings from localStorage:", e);
+      console.warn(`Failed to read analysis settings for survey ${cleanId}:`, e);
     }
   }
-  return DEFAULT_ANALYSIS_SETTINGS;
+
+  return fallbackDefaults;
 }
 
+/**
+ * Saves analysis settings strictly for the specified survey ID
+ */
 export function saveAnalysisSettings(settings: AnalysisSettings, surveyId: number = 1): void {
+  const cleanId = Math.max(1, Math.floor(Number(surveyId) || 1));
   if (typeof window !== "undefined") {
     try {
-      const key = getStorageKeyForSurvey(surveyId);
-      localStorage.setItem(key, JSON.stringify(settings));
+      const primaryKey = getStorageKeyForSurvey(cleanId);
+      const jsonStr = JSON.stringify(settings);
+      localStorage.setItem(primaryKey, jsonStr);
+
+      // Keep legacy keys in sync for compatibility
+      if (cleanId === 1) {
+        localStorage.setItem(ANALYSIS_SETTINGS_STORAGE_KEY, jsonStr);
+      } else {
+        localStorage.setItem(`${ANALYSIS_SETTINGS_STORAGE_KEY}_s${cleanId}`, jsonStr);
+      }
     } catch (e) {
-      console.warn("Failed to save analysis settings:", e);
+      console.warn(`Failed to save analysis settings for survey ${cleanId}:`, e);
     }
   }
 }
 
+/**
+ * Resets analysis settings for a specific survey back to its own stage-specific defaults
+ */
 export function resetAnalysisSettings(surveyId: number = 1): AnalysisSettings {
+  const cleanId = Math.max(1, Math.floor(Number(surveyId) || 1));
   if (typeof window !== "undefined") {
     try {
-      const key = getStorageKeyForSurvey(surveyId);
-      localStorage.removeItem(key);
+      localStorage.removeItem(getStorageKeyForSurvey(cleanId));
+      if (cleanId === 1) {
+        localStorage.removeItem(ANALYSIS_SETTINGS_STORAGE_KEY);
+      } else {
+        localStorage.removeItem(`${ANALYSIS_SETTINGS_STORAGE_KEY}_s${cleanId}`);
+      }
     } catch (e) {}
   }
-  return DEFAULT_ANALYSIS_SETTINGS;
+  return getDefaultAnalysisSettingsForSurvey(cleanId);
 }
 
 export interface AnalyzeSubscriberInput {
